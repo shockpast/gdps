@@ -26,5 +26,6 @@ Geometry Dash Private Server implemented in Rust (PHP sucks ass, and the way cur
 
 ## Credits
 
+- [Cvolton/GMDprivateServer](https://github.com/Cvolton/GMDprivateServer)
 - [MegaSa1nt/GMDprivateServer](https://github.com/MegaSa1nt/GMDprivateServer)
 - [melowody/gdrs](https://github.com/melowody/gdRs)
