@@ -3,11 +3,11 @@ use std::net::SocketAddr;
 
 use axum::{Extension, Router, extract::ConnectInfo, response::IntoResponse, routing::post};
 use axum_extra::extract::Form;
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD;
-use chrono::{DateTime, Datelike, Timelike, Utc};
+use chrono::Utc;
 use serde::{Deserialize, Deserializer};
 use sqlx::PgPool;
+
+use crate::utilities::{self, crypto};
 
 // https://github.com/tokio-rs/axum/discussions/2380#discussioncomment-7705720
 // luv luv!
@@ -166,6 +166,32 @@ struct DeleteCommentRequest {
     target_account_id: Option<i32>,
 }
 
+#[derive(Deserialize, Debug)]
+#[allow(unused)]
+struct UpdateUserSettingsRequest {
+    #[serde(default, rename = "accountID", deserialize_with = "take_first")]
+    account_id: Option<i32>,
+    #[serde(rename = "gjp2")]
+    hash: Option<String>,
+    #[serde(rename = "mS")]
+    // Allow Messages From:
+    // ALL, FRIENDS, NONE
+    allow_messages: Option<i32>,
+    #[serde(rename = "frS")]
+    // Allow Friend Requests From:
+    // ALL, NONE
+    allow_friend_requests: Option<i32>,
+    #[serde(rename = "cS")]
+    // Show Comment History To:
+    // ALL, FRIENDS, ME
+    show_comments_history: Option<i32>,
+    #[serde(rename = "yt")]
+    youtube: Option<String>,
+    twitter: Option<String>,
+    twitch: Option<String>,
+    secret: Option<String>,
+}
+
 async fn get_friend_requests_count(db: &PgPool, account_id: i32) -> i64 {
     let query = "SELECT count(*) FROM friendreqs WHERE toAccountID = $1";
     sqlx::query_scalar(query)
@@ -187,8 +213,8 @@ async fn get_messages_count(db: &PgPool, account_id: i32) -> i64 {
 async fn get_friends_count(db: &PgPool, account_id: i32) -> i64 {
     sqlx::query_scalar!(
         r#"
-        SELECT count(*) 
-        FROM friendships 
+        SELECT count(*)
+        FROM friendships
         WHERE (person1 = $1 AND is_new2 = '1') OR (person2 = $1 AND is_new1 = '1')
     "#,
         account_id
@@ -233,8 +259,8 @@ async fn get_friend_state(db: &PgPool, account_id: i32, target_account_id: i32) 
 
     let is_friend = sqlx::query_scalar!(
         r#"
-        SELECT count(*) 
-        FROM friendships 
+        SELECT count(*)
+        FROM friendships
         WHERE (person1 = $1 AND person2 = $2) OR (person2 = $1 AND person1 = $2)
     "#,
         account_id,
@@ -252,66 +278,29 @@ async fn get_friend_state(db: &PgPool, account_id: i32, target_account_id: i32) 
     0
 }
 
-fn make_time(timestamp: i32) -> String {
-    let ts = DateTime::from_timestamp(timestamp as i64, 0);
-    let Some(ts) = ts else {
-        return "Unknown".to_string();
-    };
+fn sanitize_youtube(youtube: &str) -> String {
+    if youtube.starts_with('@') {
+        let sanitized = youtube
+            .chars()
+            .enumerate()
+            .filter(|(i, c)| *i == 0 || c.is_alphanumeric() || *c == '_')
+            .map(|(_, c)| c)
+            .collect::<String>();
 
-    let time_type = 0; // change this to 1 or 2 if needed
-    let now = Utc::now().naive_utc();
-
-    match time_type {
-        1 => {
-            if ts.date_naive() == now.date() {
-                format!("{};{}", ts.hour(), ts.minute())
-            } else if ts.year() == now.year() {
-                format!("{:02}.{:02}", ts.day(), ts.month())
-            } else {
-                format!("{:02}.{:02}.{}", ts.day(), ts.month(), ts.year())
-            }
-        }
-        2 => {
-            let elapsed = now.and_utc().timestamp() - ts.timestamp();
-            let seconds = if elapsed < 1 { 1 } else { elapsed };
-
-            let tokens = [
-                (31536000, "year"),
-                (2592000, "month"),
-                (604800, "week"),
-                (86400, "day"),
-                (3600, "hour"),
-                (60, "minute"),
-                (1, "second"),
-            ];
-
-            for (unit, label) in tokens {
-                if seconds >= unit {
-                    let count = seconds / unit;
-                    return format!("{} {}{}", count, label, if count > 1 { "s" } else { "" });
-                }
-            }
-
-            "Just now".to_string()
-        }
-        _ => {
-            format!(
-                "{:02}/{:02}/{} {}.{}",
-                ts.day(),
-                ts.month(),
-                ts.year(),
-                ts.hour(),
-                ts.minute()
-            )
-        }
+        return format!("../{}", sanitized);
     }
+
+    youtube
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '_')
+        .collect()
 }
 
-fn decode_base64_comment(encoded: &str) -> Option<String> {
-    STANDARD
-        .decode(encoded)
-        .ok()
-        .and_then(|bytes| String::from_utf8(bytes).ok())
+fn sanitize_social(handle: &str) -> String {
+    handle
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '_')
+        .collect()
 }
 
 async fn update_user_scores(
@@ -429,7 +418,7 @@ async fn get_user_info(
         r#"
         SELECT youtube_url, twitter, twitch, fr_s, ms, cs FROM accounts WHERE account_id = $1
     "#,
-        me
+        target
     )
     .fetch_optional(&db)
     .await
@@ -440,6 +429,10 @@ async fn get_user_info(
     }
 
     let account_info = account_info.unwrap();
+
+    let youtube_url = sanitize_youtube(&account_info.youtube_url);
+    let twitter = sanitize_social(&account_info.twitter);
+    let twitch = sanitize_social(&account_info.twitch);
 
     let mut response = format!(
         "1:{}:2:{}:13:{}:17:{}:10:{}:11:{}:51:{}:3:{}:46:{}:52:{}:4:{}:8:{}:18:{}:19:{}:50:{}:20:{}:21:{}:22:{}:23:{}:24:{}:25:{}:26:{}:28:{}:43:{}:48:{}:53:{}:54:{}:30:{}:16:{}:31:{}:44:{}:45:{}:49:{}:55:{}:56:{}:57:{}",
@@ -458,7 +451,7 @@ async fn get_user_info(
         account_info.ms,
         account_info.fr_s,
         account_info.cs,
-        account_info.youtube_url,
+        youtube_url,
         user.acc_icon,
         user.acc_ship,
         user.acc_ball,
@@ -473,8 +466,8 @@ async fn get_user_info(
         rank,
         user.ext_id,
         if is_me { 1 } else { 0 },
-        account_info.twitter,
-        account_info.twitch,
+        twitter,
+        twitch,
         0,
         user.dinfo.unwrap_or_default(),
         user.sinfo.unwrap_or_default(),
@@ -494,6 +487,7 @@ async fn get_user_info(
         response.push_str(&format!(":31:{}", friend_state));
     }
 
+    response.push_str("29:1");
     response.into_response()
 }
 
@@ -539,7 +533,7 @@ async fn get_user_comments(
     .unwrap_or_default();
 
     for comment in comments {
-        let comment_date = make_time(comment.timestamp);
+        let comment_date = utilities::make_time(comment.timestamp as i64);
 
         let _ = write!(
             comment_string,
@@ -576,7 +570,7 @@ async fn add_user_comment(
         return "-1".into_response();
     };
 
-    let decoded_comment = decode_base64_comment(comment).unwrap();
+    let decoded_comment = crypto::decode_base64(comment);
 
     if decoded_comment.len() > 140 {
         return format!(
@@ -665,6 +659,40 @@ async fn delete_user_comment(
     "1".into_response()
 }
 
+async fn update_user_settings(
+    Extension(db): Extension<PgPool>,
+    Form(data): Form<UpdateUserSettingsRequest>,
+) -> impl IntoResponse {
+    let account_id = data.account_id.unwrap();
+    let youtube = data.youtube.unwrap_or_default();
+    let twitter = data.twitter.unwrap_or_default();
+    let twitch = data.twitch.unwrap_or_default();
+    let allow_messages = data.allow_messages.unwrap_or_default();
+    let allow_friend_requests = data.allow_friend_requests.unwrap_or_default();
+    let show_comments_history = data.show_comments_history.unwrap_or_default();
+
+    sqlx::query!(
+        r#"
+        UPDATE accounts 
+        SET youtube_url = $1, twitter = $2, twitch = $3,
+            ms = $4, fr_s = $5, cs = $6
+        WHERE account_id = $7
+    "#,
+        youtube,
+        twitter,
+        twitch,
+        allow_messages,
+        allow_friend_requests,
+        show_comments_history,
+        account_id
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+
+    "1".into_response()
+}
+
 pub fn init() -> Router {
     Router::new()
         .route(
@@ -674,23 +702,15 @@ pub fn init() -> Router {
         .route("/database/uploadGJAccComment20.php", post(add_user_comment))
         .route("/database/getGJUserInfo20.php", post(get_user_info))
         .route(
+            "/database/updateGJAccSettings20.php",
+            post(update_user_settings),
+        )
+        .route(
             "/database/deleteGJAccComment20.php",
             post(delete_user_comment),
         )
         .route(
             "/database/updateGJUserScore22.php",
-            post(update_user_scores),
-        )
-        .route(
-            "/database/updateGJUserScore21.php",
-            post(update_user_scores),
-        )
-        .route(
-            "/database/updateGJUserScore20.php",
-            post(update_user_scores),
-        )
-        .route(
-            "/database/updateGJUserScore19.php",
             post(update_user_scores),
         )
 }

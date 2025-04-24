@@ -7,8 +7,12 @@ edition = "2024"
 argon2 = "0.5.3"
 base64 = "0.22.1"
 chrono = "0.4.40"
+flate2 = "1.1.1"
+hex = "0.4.3"
+rand = "0.9.1"
+regex = "1.11.1"
 sha1 = "0.10.6"
-steamid-ng = "1.0.0"
+sha2 = "0.11.0-pre.5"
 tracing = "0.1.41"
 
 [dependencies.serde]
@@ -17,7 +21,7 @@ features = ["derive"]
 
 [dependencies.axum]
 version = "0.8.3"
-features = ["tracing"]
+features = ["tracing", "macros"]
 
 [dependencies.axum-extra]
 version = "0.10.1"

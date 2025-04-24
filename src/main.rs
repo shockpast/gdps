@@ -3,32 +3,27 @@ mod utilities;
 
 use std::net::SocketAddr;
 
-use argon2::Argon2;
 use axum::{Extension, Router, routing::get};
 use endpoints::database;
 use sqlx::postgres::PgPoolOptions;
-use tracing::Level;
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_max_level(Level::DEBUG)
-        .init();
+    tracing_subscriber::fmt().init();
 
     let pool = PgPoolOptions::new()
         .max_connections(5)
         .connect("postgresql://postgres:admin@localhost/gdps")
         .await
         .unwrap();
-    let argon2 = Argon2::default();
 
     let router = Router::new()
         .route("/", get(index))
         .merge(database::accounts::init())
         .merge(database::user::init())
         .merge(database::rewards::init())
-        .layer(Extension(pool))
-        .layer(Extension(argon2));
+        .merge(database::levels::init())
+        .layer(Extension(pool));
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
     axum::serve(

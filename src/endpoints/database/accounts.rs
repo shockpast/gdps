@@ -1,16 +1,13 @@
 use std::net::SocketAddr;
 
-use argon2::Argon2;
 use axum::{Extension, Form, Router, extract::ConnectInfo, response::IntoResponse, routing::post};
 use serde::Deserialize;
 use sqlx::postgres::PgPool;
-use tracing::error;
 
-use crate::utilities::{database::get_user_id, gjp2_hash, pass_hash};
+use crate::utilities::{crypto, database::get_user_id};
 
 #[derive(Deserialize)]
 #[allow(unused)]
-#[serde(rename_all = "camelCase")]
 struct LoginRequest {
     #[serde(rename = "udid")]
     id: String,
@@ -46,18 +43,17 @@ struct RegisterRequest {
 //  default  = Something went wrong.
 async fn register_account(
     Extension(db): Extension<PgPool>,
-    Extension(argon2): Extension<Argon2<'_>>,
     Form(data): Form<RegisterRequest>,
-) -> &'static str {
+) -> impl IntoResponse {
     if data.username.len() < 3 {
-        return "-9";
+        return "-9".into_response();
     }
     if data.password.len() < 6 {
-        return "-8";
+        return "-8".into_response();
     }
 
     if data.username.len() > 20 {
-        return "-4";
+        return "-4".into_response();
     }
 
     let account = sqlx::query!(
@@ -69,11 +65,11 @@ async fn register_account(
     .unwrap();
 
     if account.unwrap().count.unwrap_or_default() != 0 {
-        return "-2";
+        return "-2".into_response();
     }
 
-    let password = pass_hash(&argon2, &data.password);
-    let gjp2 = gjp2_hash(data.password);
+    let password = crypto::hash_password(&data.password);
+    let gjp2 = crypto::sha1_salt(&data.password, "mI29fmAnxgTs");
 
     let result = sqlx::query!(
         r#"
@@ -90,8 +86,8 @@ async fn register_account(
     .await;
 
     match result {
-        Ok(_) => "1",
-        Err(_) => "0",
+        Ok(_) => "1".into_response(),
+        Err(_) => "0".into_response(),
     }
 }
 
@@ -131,10 +127,7 @@ async fn login_account(
     .await
     {
         Ok(user_id) => user_id,
-        Err(e) => {
-            error!("get_user_id failed to create or get a user: {e:?}");
-            return "-1".into_response();
-        }
+        _ => return "-1".into_response(),
     };
 
     if data.id.parse::<i64>().is_err() {
