@@ -1,3 +1,6 @@
+use std::sync::Arc;
+
+use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
 use base64::{
     Engine,
     engine::general_purpose::{STANDARD, URL_SAFE},
@@ -48,14 +51,20 @@ pub fn hash_level_string(level_string: String) -> String {
     sha1_salt(&lstring, "xI25fpAapCQg")
 }
 
-pub fn hash_password(password: &str) -> String {
-    let mut bytes = [0u8; 32];
+pub async fn hash_password(password: &str) -> String {
+    let password = password.to_string();
+    let salt = Arc::new(SaltString::from_b64("mI29fmAnxgTs").unwrap());
 
-    argon2::Argon2::default()
-        .hash_password_into(password.as_bytes(), "mI29fmAnxgTs".as_bytes(), &mut bytes)
-        .unwrap();
+    tokio::task::spawn_blocking(move || {
+        let salt = Arc::clone(&salt);
 
-    hex::encode(bytes)
+        Argon2::default()
+            .hash_password(password.as_bytes(), &*salt)
+            .unwrap()
+            .to_string()
+    })
+    .await
+    .unwrap()
 }
 
 pub fn encode_base64(input: &str) -> String {

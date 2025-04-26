@@ -68,7 +68,7 @@ async fn register_account(
         return "-2".into_response();
     }
 
-    let password = crypto::hash_password(&data.password);
+    let password = crypto::hash_password(&data.password).await;
     let gjp2 = crypto::sha1_salt(&data.password, "mI29fmAnxgTs");
 
     let result = sqlx::query!(

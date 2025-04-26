@@ -6,6 +6,7 @@ use axum_extra::extract::Form;
 use chrono::Utc;
 use serde::{Deserialize, Deserializer};
 use sqlx::PgPool;
+use tracing::info;
 
 use crate::utilities::{self, crypto};
 
@@ -374,12 +375,16 @@ async fn get_user_info(
 
     let is_me = me == target;
 
-    let is_blocked = sqlx::query_scalar!(r#"
+    let is_blocked = sqlx::query_scalar!(
+        r#"
         SELECT count(*) FROM blocks WHERE (person1 = $1 AND person2 = $2) OR (person2 = $1 AND person1 = $2)
-    "#, me, target)
-        .fetch_one(&db)
-        .await
-        .unwrap_or_default();
+    "#,
+        me,
+        target
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap_or_default();
 
     if is_blocked.unwrap() != 0 {
         return "-1".into_response();
@@ -430,6 +435,30 @@ async fn get_user_info(
 
     let account_info = account_info.unwrap();
 
+    let account_role_assign = sqlx::query!(
+        "SELECT role_id FROM role_assign WHERE account_id = $1",
+        data.account_id.unwrap_or_default() as i64
+    )
+    .fetch_optional(&db)
+    .await
+    .unwrap();
+
+    if account_role_assign.is_none() {
+        return "-1".into_response();
+    }
+
+    let account_role = sqlx::query!(
+        "SELECT action_request_mod, mod_badge_level FROM roles WHERE role_id = $1",
+        account_role_assign.unwrap().role_id
+    )
+    .fetch_optional(&db)
+    .await
+    .unwrap();
+
+    if account_role.is_none() {
+        return "-1".into_response();
+    }
+
     let youtube_url = sanitize_youtube(&account_info.youtube_url);
     let twitter = sanitize_social(&account_info.twitter);
     let twitch = sanitize_social(&account_info.twitch);
@@ -468,7 +497,7 @@ async fn get_user_info(
         if is_me { 1 } else { 0 },
         twitter,
         twitch,
-        0,
+        account_role.unwrap().mod_badge_level,
         user.dinfo.unwrap_or_default(),
         user.sinfo.unwrap_or_default(),
         user.pinfo.unwrap_or_default()
@@ -479,15 +508,16 @@ async fn get_user_info(
         let messages = get_messages_count(&db, me).await;
         let friends = get_friends_count(&db, me).await;
         response.push_str(&format!(
-            ":38:{}:39:{}:40:{}",
+            ":38:{}:39:{}:40:{}:",
             messages, friend_requests, friends
         ));
     } else {
         let friend_state = get_friend_state(&db, me, target).await;
-        response.push_str(&format!(":31:{}", friend_state));
+        response.push_str(&format!(":31:{}:", friend_state));
     }
 
     response.push_str("29:1");
+    info!("{response:?}");
     response.into_response()
 }
 

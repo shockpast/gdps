@@ -37,7 +37,7 @@ async fn get_rewards(
         return "-1".into_response();
     }
 
-    let checksum = data.chk.unwrap();
+    // let checksum = data.chk.unwrap();
     let account_id = data.account_id.unwrap();
     let reward_type = data.reward_type.unwrap();
     let hash = data.hash.unwrap();
