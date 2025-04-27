@@ -4,26 +4,29 @@ use rand::prelude::*;
 use serde::Deserialize;
 use sqlx::PgPool;
 
-use crate::utilities::crypto;
+use crate::{
+    types::response::CommonResponse,
+    utilities::crypto::{self, decode_base64_url, xor_cipher},
+};
 
 #[derive(Deserialize, Debug)]
 #[allow(unused)]
 struct RewardsRequest {
     #[serde(rename = "gameVersion")]
-    game_version: Option<i32>,
+    game_version: i32,
     #[serde(rename = "binaryVersion")]
-    binary_version: Option<i32>,
+    binary_version: i32,
     #[serde(rename = "udid")]
-    id: Option<String>,
+    id: String,
     #[serde(rename = "uuid")]
-    user_id: Option<i32>,
+    user_id: i32,
     #[serde(rename = "accountID")]
-    account_id: Option<i32>,
+    account_id: i32,
     #[serde(rename = "gjp2")]
-    hash: Option<String>,
+    hash: String,
     #[serde(rename = "rewardType")]
     reward_type: Option<i32>, // TODO: enum
-    secret: Option<String>,
+    secret: String,
     chk: Option<String>, // checksum? used for security purposes or whatever
     r1: Option<i32>,
     r2: Option<i32>, // beep boop, star wars mf
@@ -33,14 +36,14 @@ async fn get_rewards(
     Extension(db): Extension<PgPool>,
     Form(data): Form<RewardsRequest>,
 ) -> impl IntoResponse {
-    if data.account_id.is_none() {
-        return "-1".into_response();
+    if data.secret != "Wmfd2893gb7" {
+        return CommonResponse::InvalidRequest.into_response();
     }
 
-    // let checksum = data.chk.unwrap();
-    let account_id = data.account_id.unwrap();
+    let checksum = data.chk.unwrap();
+    let account_id = data.account_id;
     let reward_type = data.reward_type.unwrap();
-    let hash = data.hash.unwrap();
+    let hash = data.hash;
 
     let account = sqlx::query!("SELECT * FROM accounts WHERE account_id = $1", account_id)
         .fetch_one(&db)
@@ -55,10 +58,13 @@ async fn get_rewards(
         return "-1".into_response();
     }
 
-    let user = sqlx::query!("SELECT * FROM users WHERE username = $1", account.username)
-        .fetch_one(&db)
-        .await
-        .unwrap();
+    let user = sqlx::query!(
+        "SELECT * FROM users WHERE ext_id = $1",
+        &data.account_id.to_string()
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
 
     let chests_data = sqlx::query!(
         "SELECT chest1_time, chest2_time, chest1_count, chest2_count FROM users WHERE ext_id = $1",
@@ -140,11 +146,13 @@ async fn get_rewards(
         .unwrap();
     }
 
+    let reward_checksum = xor_cipher(decode_base64_url(&checksum[..5]).as_bytes(), b"59182");
+
     let reward = format!(
         "1:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
         user.user_id,
-        "",
-        data.id.unwrap_or_default(),
+        reward_checksum,
+        data.id,
         account_id,
         chest1_left,
         chest1_stuff,

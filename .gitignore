@@ -1,4 +1,7 @@
 /target
+
 .env
 .sqlx
+
 data/levels/*
+data/saves/*

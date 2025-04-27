@@ -1,6 +1,6 @@
 # Endpoints
 
-names of titles from `incl` folder in Cvolton's repository
+Names of Folders are from `incl` folder in Cvolton's and MegaSa1nt's repositories
 
 ## levels
 
@@ -49,7 +49,7 @@ names of titles from `incl` folder in Cvolton's repository
 
 ## mods
 
-- [ ] requestUserAccess
+- [x] requestUserAccess
 
 ## profiles
 
@@ -79,5 +79,12 @@ names of titles from `incl` folder in Cvolton's repository
 - [ ] getGJCreators
 - [ ] getGJLevelScores
 - [ ] getGJLevelScoresPlat
-- [ ] getGJScores
+- [x] getGJScores
 - [x] updateGJUserScore
+
+## accounts
+
+- [x] backupGJAccount
+- [x] loginGJAccount
+- [x] registerGJAccount
+- [x] syncGJAccount

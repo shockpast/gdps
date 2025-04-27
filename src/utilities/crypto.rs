@@ -6,16 +6,6 @@ use base64::{
     engine::general_purpose::{STANDARD, URL_SAFE},
 };
 use sha1::Digest as sha1Digest;
-use sha2::Digest;
-
-pub fn hash(message: String, salt: String) -> String {
-    let mut sha256 = sha2::Sha256::new();
-
-    sha256.update(salt.as_bytes());
-    sha256.update(message.as_bytes());
-
-    hex::encode_upper(sha256.finalize())
-}
 
 pub fn xor_cipher(string: &[u8], key: &[u8]) -> String {
     let mut result: String = String::new();
@@ -38,14 +28,13 @@ pub fn sha1_salt(base: &String, salt: &str) -> String {
 
 pub fn hash_level_string(level_string: String) -> String {
     let mut lstring: String = String::new();
-    let mut counter: i16 = 0;
 
-    for k in (0..level_string.len()).step_by(level_string.len() / 40) {
+    for (counter, i) in (0_i16..).zip((0..level_string.len()).step_by(level_string.len() / 40)) {
         if counter == 40 {
             break;
         }
-        lstring.push(level_string.as_bytes()[k] as char);
-        counter += 1;
+
+        lstring.push(level_string.as_bytes()[i] as char);
     }
 
     sha1_salt(&lstring, "xI25fpAapCQg")
@@ -76,9 +65,19 @@ pub fn encode_base64_url(input: &str) -> String {
 }
 
 pub fn decode_base64(input: &str) -> String {
-    hex::encode_upper(STANDARD.decode(input).unwrap_or_default())
+    hex::encode(STANDARD.decode(input).unwrap_or_default())
 }
 
 pub fn decode_base64_url(input: &str) -> String {
-    hex::encode_upper(URL_SAFE.decode(input).unwrap_or_default())
+    hex::encode(
+        STANDARD
+            .decode(input.replace('-', "+").replace('_', "/"))
+            .unwrap_or_default(),
+    )
+}
+
+pub fn decode_base64_url_raw(input: &str) -> Vec<u8> {
+    STANDARD
+        .decode(input.replace('-', "+").replace('_', "/"))
+        .unwrap_or_default()
 }

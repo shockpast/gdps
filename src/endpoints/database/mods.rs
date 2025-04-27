@@ -3,6 +3,8 @@ use axum_extra::extract::Form;
 use serde::Deserialize;
 use sqlx::PgPool;
 
+use crate::{types::response::CommonResponse, utilities};
+
 #[derive(Deserialize, Debug)]
 #[allow(unused)]
 struct RequestUserAccessRequest {
@@ -25,19 +27,15 @@ async fn request_user_access(
     Extension(db): Extension<PgPool>,
     Form(data): Form<RequestUserAccessRequest>,
 ) -> impl IntoResponse {
-    let account = sqlx::query!(
-        "SELECT gjp2 FROM accounts WHERE account_id = $1",
-        data.account_id as i64
-    )
-    .fetch_optional(&db)
-    .await
-    .unwrap();
+    let account = match utilities::database::get_account_by_id(&db, data.account_id).await {
+        Some(account) => account,
+        None => {
+            return CommonResponse::InvalidRequest.into_response();
+        }
+    };
 
-    if account.is_none() {
-        return "-1".into_response();
-    }
-    if account.unwrap().gjp2.unwrap_or_default() != data.hash {
-        return "-1".into_response();
+    if account.gjp2.unwrap_or_default() != data.hash {
+        return CommonResponse::InvalidRequest.into_response();
     }
 
     let role_assign = sqlx::query!(
@@ -49,7 +47,7 @@ async fn request_user_access(
     .unwrap();
 
     if role_assign.is_none() {
-        return "-1".into_response();
+        return CommonResponse::InvalidRequest.into_response();
     }
 
     let role = sqlx::query!(
@@ -61,7 +59,7 @@ async fn request_user_access(
     .unwrap();
 
     if role.action_request_mod == 0 {
-        return "-1".into_response();
+        return CommonResponse::InvalidRequest.into_response();
     }
 
     format!("{}", role.mod_badge_level.max(2)).into_response()

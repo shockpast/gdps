@@ -1,10 +1,21 @@
-use std::net::SocketAddr;
+use std::{io::Read, net::SocketAddr};
 
-use axum::{Extension, Form, Router, extract::ConnectInfo, response::IntoResponse, routing::post};
+use axum::{
+    Extension, Form, Router,
+    extract::ConnectInfo,
+    response::{IntoResponse, Response},
+    routing::post,
+};
+use flate2::read::GzDecoder;
 use serde::Deserialize;
 use sqlx::postgres::PgPool;
+use tokio::fs::{read_to_string, write};
+use tracing::error;
 
-use crate::utilities::{crypto, database::get_user_id};
+use crate::{
+    types::response::{BackupResponse, CommonResponse, LoginResponse, RegisterResponse},
+    utilities,
+};
 
 #[derive(Deserialize)]
 #[allow(unused)]
@@ -30,46 +41,84 @@ struct RegisterRequest {
     secret: String,
 }
 
-// Possible Responses:
-//  -99      = Emails do not match
-//  -9       = Too short. Minimum 3 characters (username)
-//  -8       = Too short. Minimum 6 characters (password)
-//  -7       = Passwords do not match
-//  -6       = Emails is invalid
-//  -5       = Password is invalid
-//  -4       = Username is invalid
-//  -3       = Email is already in use
-//  -2       = Username is already in use
-//  default  = Something went wrong.
+#[derive(Deserialize)]
+#[allow(unused)]
+struct GetAccountURLRequest {
+    #[serde(rename = "accountID")]
+    account_id: i32,
+    #[serde(rename = "type")]
+    button_type: ButtonType,
+    secret: String,
+}
+
+#[derive(Deserialize)]
+enum ButtonType {
+    #[serde(rename = "1")]
+    Save,
+    #[serde(rename = "2")]
+    Load,
+}
+
+#[derive(Deserialize)]
+#[allow(unused)]
+struct BackupRequest {
+    #[serde(rename = "gameVersion")]
+    game_version: i32,
+    #[serde(rename = "binaryVersion")]
+    binary_version: i32,
+    #[serde(rename = "udid")]
+    id: String,
+    #[serde(rename = "uuid")]
+    user_id: String,
+    #[serde(rename = "accountID")]
+    account_id: i32,
+    #[serde(rename = "gjp2")]
+    hash: String,
+    #[serde(rename = "saveData")]
+    save_data: String,
+    secret: String,
+}
+
+#[derive(Deserialize)]
+#[allow(unused)]
+struct SyncRequest {
+    #[serde(rename = "gameVersion")]
+    game_version: i32,
+    #[serde(rename = "binaryVersion")]
+    binary_version: i32,
+    #[serde(rename = "udid")]
+    id: String,
+    #[serde(rename = "uuid")]
+    user_id: String,
+    #[serde(rename = "accountID")]
+    account_id: i32,
+    #[serde(rename = "gjp2")]
+    hash: String,
+    secret: String,
+}
+
 async fn register_account(
     Extension(db): Extension<PgPool>,
     Form(data): Form<RegisterRequest>,
-) -> impl IntoResponse {
+) -> Response {
     if data.username.len() < 3 {
-        return "-9".into_response();
+        return RegisterResponse::UsernameIsTooShort.into_response();
     }
     if data.password.len() < 6 {
-        return "-8".into_response();
+        return RegisterResponse::PasswordIsTooShort.into_response();
     }
 
     if data.username.len() > 20 {
-        return "-4".into_response();
+        return RegisterResponse::InvalidUsername.into_response();
     }
 
-    let account = sqlx::query!(
-        "SELECT count(*) FROM accounts WHERE username = $1",
-        data.username
-    )
-    .fetch_optional(&db)
-    .await
-    .unwrap();
-
-    if account.unwrap().count.unwrap_or_default() != 0 {
-        return "-2".into_response();
+    let account = utilities::database::get_account_by_username(&db, &data.username).await;
+    if account.is_some() {
+        return RegisterResponse::AccountExists.into_response();
     }
 
-    let password = crypto::hash_password(&data.password).await;
-    let gjp2 = crypto::sha1_salt(&data.password, "mI29fmAnxgTs");
+    let password = utilities::crypto::hash_password(&data.password).await;
+    let gjp2 = utilities::crypto::sha1_salt(&data.password, "mI29fmAnxgTs");
 
     let result = sqlx::query!(
         r#"
@@ -86,23 +135,16 @@ async fn register_account(
     .await;
 
     match result {
-        Ok(_) => "1".into_response(),
-        Err(_) => "0".into_response(),
+        Ok(_) => RegisterResponse::Success.into_response(),
+        Err(_) => RegisterResponse::InvalidRequest.into_response(),
     }
 }
 
-// Possible Responses:
-//  -13      = Already linked to different Steam account
-//  -12      = Account has been disabled
-//  -10      = Already linked to different account
-//  -9       = Too short. Minimum 3 characters (username)
-//  -8       = Too short. Minimum 6 characters (password)
-//  default  = Login failed
 async fn login_account(
     Extension(db): Extension<PgPool>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Form(data): Form<LoginRequest>,
-) -> impl IntoResponse {
+) -> Response {
     let account = match sqlx::query!(
         "SELECT account_id, password, gjp2, is_active FROM accounts WHERE username = $1",
         data.username
@@ -111,14 +153,14 @@ async fn login_account(
     .await
     {
         Ok(Some(acc)) => acc,
-        _ => return "-1".into_response(),
+        _ => return LoginResponse::InvalidRequest.into_response(),
     };
 
     if data.hash != account.gjp2.unwrap_or_default() {
-        return "0".into_response();
+        return LoginResponse::WrongCredentials.into_response();
     }
 
-    let user_id = match get_user_id(
+    let user_id = match utilities::database::get_user_id(
         &db,
         &account.account_id.to_string(),
         &data.username,
@@ -127,7 +169,7 @@ async fn login_account(
     .await
     {
         Ok(user_id) => user_id,
-        _ => return "-1".into_response(),
+        _ => return LoginResponse::InvalidRequest.into_response(),
     };
 
     if data.id.parse::<i64>().is_err() {
@@ -151,6 +193,104 @@ async fn login_account(
     format!("{},{}", account.account_id, user_id).into_response()
 }
 
+async fn get_account_url() -> Response {
+    "https://rustyserver.local".into_response()
+}
+
+async fn backup_account(
+    Extension(db): Extension<PgPool>,
+    Form(data): Form<BackupRequest>,
+) -> Response {
+    if data.secret != "Wmfv3899gc9" {
+        return CommonResponse::InvalidRequest.into_response();
+    }
+
+    let account = match utilities::database::get_account_by_id(&db, data.account_id).await {
+        Some(account) => account,
+        None => {
+            return CommonResponse::InvalidRequest.into_response();
+        }
+    };
+
+    if account.gjp2.unwrap_or_default() != data.hash {
+        return BackupResponse::WrongCredentials.into_response();
+    }
+
+    let mut save_data = data.save_data.splitn(2, ";");
+    let compressed_data = save_data.next().unwrap();
+
+    let save_data = utilities::crypto::decode_base64_url_raw(compressed_data);
+
+    let mut decoder = GzDecoder::new(save_data.as_slice());
+    let mut decompressed_data = String::new();
+
+    match decoder.read_to_string(&mut decompressed_data) {
+        Ok(_) => (),
+        Err(e) => {
+            error!("{e:?}");
+            return BackupResponse::SomethingWentWrong.into_response();
+        }
+    };
+
+    let orbs = decompressed_data
+        .split("</s><k>14</k><s>")
+        .nth(1)
+        .and_then(|part| part.split("</s>").next())
+        .unwrap_or("0")
+        .parse::<i32>()
+        .unwrap();
+    let levels = decompressed_data
+        .split("<k>GS_value</k>")
+        .nth(1)
+        .and_then(|part| part.split("</s><k>4</k><s>").nth(1))
+        .and_then(|part| part.split("</s>").next())
+        .unwrap_or("0")
+        .parse::<i32>()
+        .unwrap();
+
+    sqlx::query!(
+        "UPDATE users SET orbs = $1, completed_lvls = $2 WHERE ext_id = $3",
+        orbs,
+        levels,
+        &data.account_id.to_string()
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+
+    match write(format!("data/saves/{}", data.account_id), data.save_data).await {
+        Ok(_) => CommonResponse::Success.into_response(),
+        Err(_) => BackupResponse::InvalidRequest.into_response(),
+    }
+}
+
+async fn sync_account(Extension(db): Extension<PgPool>, Form(data): Form<SyncRequest>) -> Response {
+    if data.secret != "Wmfv3899gc9" {
+        return CommonResponse::InvalidRequest.into_response();
+    }
+
+    let account = match utilities::database::get_account_by_id(&db, data.account_id).await {
+        Some(account) => account,
+        None => {
+            return CommonResponse::InvalidRequest.into_response();
+        }
+    };
+
+    if account.gjp2.unwrap_or_default() != data.hash {
+        return BackupResponse::WrongCredentials.into_response();
+    }
+
+    let save_data = match read_to_string(format!("data/saves/{}", data.account_id)).await {
+        Ok(s) => s,
+        Err(e) => {
+            error!("{e:?}");
+            return CommonResponse::InvalidRequest.into_response();
+        }
+    };
+
+    format!("{};21;30;a;a", save_data).into_response()
+}
+
 pub fn init() -> Router {
     Router::new()
         .route("/database/accounts/loginGJAccount.php", post(login_account))
@@ -158,4 +298,13 @@ pub fn init() -> Router {
             "/database/accounts/registerGJAccount.php",
             post(register_account),
         )
+        .route(
+            "/database/accounts/backupGJAccountNew.php",
+            post(backup_account),
+        )
+        .route(
+            "/database/accounts/syncGJAccountNew.php",
+            post(sync_account),
+        )
+        .route("/database/getAccountURL.php", post(get_account_url))
 }

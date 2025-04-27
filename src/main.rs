@@ -1,4 +1,5 @@
 mod endpoints;
+mod types;
 mod utilities;
 
 use std::net::SocketAddr;
@@ -27,6 +28,7 @@ async fn main() {
         .merge(endpoints::database::rewards::init())
         .merge(endpoints::database::levels::init())
         .merge(endpoints::database::mods::init())
+        .merge(endpoints::database::scores::init())
         .layer(Extension(pool));
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();

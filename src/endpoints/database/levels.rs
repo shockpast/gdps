@@ -6,9 +6,12 @@ use sqlx::PgPool;
 use tokio::fs::{read, rename, write};
 use tracing::error;
 
-use crate::utilities::{
-    self, crypto,
-    database::{Level, get_level_by_id},
+use crate::{
+    types::{
+        database::Level,
+        response::{CommonResponse, LevelUploadResponse},
+    },
+    utilities,
 };
 
 fn deserialize_enum_from_int<'de, D>(deserializer: D) -> Result<Option<QueryType>, D::Error>
@@ -267,7 +270,7 @@ async fn upload_level(
     Form(data): Form<UploadLevelRequest>,
 ) -> impl IntoResponse {
     if data.account_id.unwrap_or(0) == 0 || data.user_id.unwrap_or(0) == 0 {
-        return "-11".into_response();
+        return CommonResponse::InvalidRequest.into_response();
     }
 
     let account_id = data.account_id.unwrap();
@@ -282,11 +285,11 @@ async fn upload_level(
     .unwrap()
     {
         Some(acc) => acc,
-        None => return "-11".into_response(),
+        None => return CommonResponse::InvalidRequest.into_response(),
     };
 
     if data.hash != account.gjp2 {
-        return "-11".into_response();
+        return CommonResponse::InvalidRequest.into_response();
     }
 
     let level = sqlx::query!(
@@ -303,7 +306,7 @@ async fn upload_level(
 
         let level_write_result = write(level_path, &data.level_string).await;
         if level_write_result.is_err() {
-            return "-5".into_response();
+            return LevelUploadResponse::FailedToWriteLevel.into_response();
         }
 
         sqlx::query!(r#"
@@ -330,7 +333,7 @@ async fn upload_level(
     let level_write_result = write(&temporary_level_path, &data.level_string).await;
     if level_write_result.is_err() {
         error!("{level_write_result:?}");
-        return "-5".into_response();
+        return LevelUploadResponse::FailedToWriteLevel.into_response();
     }
 
     let level_insert = sqlx::query!(
@@ -370,7 +373,7 @@ async fn get_level(
 ) -> impl IntoResponse {
     let user_id = data.user_id.unwrap_or_default();
     if user_id == 0 {
-        return "-11".into_response();
+        return CommonResponse::InvalidRequest.into_response();
     }
 
     let game_version = data.game_version;
@@ -700,7 +703,7 @@ async fn get_level(
             level.star_featured,
             level.star_epic,
             level.objects,
-            crypto::encode_base64(&level.level_desc),
+            utilities::crypto::encode_base64(&level.level_desc),
             level.level_length,
             level.original,
             level.two_player,
@@ -776,16 +779,18 @@ async fn download_level(
     .unwrap()
     {
         Some(acc) => acc,
-        None => return "-11".into_response(),
+        None => return CommonResponse::InvalidRequest.into_response(),
     };
 
     if data.hash != account.gjp2 {
-        return "-11".into_response();
+        return CommonResponse::InvalidRequest.into_response();
     }
 
-    let level = match get_level_by_id(&db, data.level_id.unwrap()).await {
-        Ok(level) => level,
-        _ => return "-1".into_response(),
+    let level = match utilities::database::get_level_by_id(&db, data.level_id.unwrap()).await {
+        Some(level) => level,
+        None => {
+            return CommonResponse::InvalidRequest.into_response();
+        }
     };
 
     let level_string = match read(format!("./data/levels/{}", level.level_id)).await {
@@ -829,11 +834,15 @@ async fn download_level(
         ""
     ).to_string();
 
-    out = format!("{}#{}", out, crypto::hash_level_string(level_string));
     out = format!(
         "{}#{}",
         out,
-        crypto::sha1_salt(
+        utilities::crypto::hash_level_string(level_string)
+    );
+    out = format!(
+        "{}#{}",
+        out,
+        utilities::crypto::sha1_salt(
             &format!(
                 "{},{},{},{},{},{},{},{}",
                 level.user_id,

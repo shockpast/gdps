@@ -1,14 +1,21 @@
 use std::fmt::Write;
 use std::net::SocketAddr;
 
-use axum::{Extension, Router, extract::ConnectInfo, response::IntoResponse, routing::post};
+use axum::{
+    Extension, Router,
+    extract::ConnectInfo,
+    response::{IntoResponse, Response},
+    routing::post,
+};
 use axum_extra::extract::Form;
 use chrono::Utc;
 use serde::{Deserialize, Deserializer};
 use sqlx::PgPool;
-use tracing::info;
 
-use crate::utilities::{self, crypto};
+use crate::{
+    types::response::CommonResponse,
+    utilities::{self, crypto},
+};
 
 // https://github.com/tokio-rs/axum/discussions/2380#discussioncomment-7705720
 // luv luv!
@@ -193,25 +200,27 @@ struct UpdateUserSettingsRequest {
     secret: Option<String>,
 }
 
-async fn get_friend_requests_count(db: &PgPool, account_id: i32) -> i64 {
-    let query = "SELECT count(*) FROM friendreqs WHERE toAccountID = $1";
-    sqlx::query_scalar(query)
-        .bind(account_id)
-        .fetch_one(db)
-        .await
-        .unwrap_or(0)
+async fn get_friend_requests_count(db: &PgPool, account_id: i32) -> Option<i64> {
+    sqlx::query_scalar!(
+        "SELECT count(*) FROM friend_requests WHERE to_account_id = $1",
+        account_id
+    )
+    .fetch_one(db)
+    .await
+    .unwrap_or_default()
 }
 
-async fn get_messages_count(db: &PgPool, account_id: i32) -> i64 {
-    let query = "SELECT count(*) FROM messages WHERE toAccountID = $1 AND isNew = 0";
-    sqlx::query_scalar(query)
-        .bind(account_id)
-        .fetch_one(db)
-        .await
-        .unwrap_or(0)
+async fn get_messages_count(db: &PgPool, account_id: i32) -> Option<i64> {
+    sqlx::query_scalar!(
+        "SELECT count(*) FROM messages WHERE to_account_id = $1 AND is_new = 0",
+        account_id
+    )
+    .fetch_one(db)
+    .await
+    .unwrap_or_default()
 }
 
-async fn get_friends_count(db: &PgPool, account_id: i32) -> i64 {
+async fn get_friends_count(db: &PgPool, account_id: i32) -> Option<i64> {
     sqlx::query_scalar!(
         r#"
         SELECT count(*)
@@ -223,7 +232,6 @@ async fn get_friends_count(db: &PgPool, account_id: i32) -> i64 {
     .fetch_one(db)
     .await
     .unwrap_or_default()
-    .unwrap()
 }
 
 async fn get_friend_state(db: &PgPool, account_id: i32, target_account_id: i32) -> i32 {
@@ -308,7 +316,7 @@ async fn update_user_scores(
     Extension(db): Extension<PgPool>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Form(data): Form<UpdateRequest>,
-) -> impl IntoResponse {
+) -> Response {
     let upload_date = chrono::Utc::now().timestamp();
 
     let old_stats = sqlx::query!("SELECT * FROM users WHERE user_id = $1", data.account_id)
@@ -360,18 +368,22 @@ async fn update_user_scores(
         .execute(&db)
         .await;
 
-        return data.account_id.unwrap().to_string();
+        return data.account_id.unwrap().to_string().into_response();
     }
 
-    "-1".to_string()
+    "-1".into_response()
 }
 
 async fn get_user_info(
     Extension(db): Extension<PgPool>,
     Form(data): Form<UserInfoRequest>,
-) -> impl IntoResponse {
-    let target = data.target_account_id.unwrap_or_default();
-    let me = data.account_id.unwrap_or_default();
+) -> Response {
+    let Some(target) = data.target_account_id else {
+        return CommonResponse::InvalidRequest.into_response();
+    };
+    let Some(me) = data.account_id else {
+        return CommonResponse::InvalidRequest.into_response();
+    };
 
     let is_me = me == target;
 
@@ -387,24 +399,16 @@ async fn get_user_info(
     .unwrap_or_default();
 
     if is_blocked.unwrap() != 0 {
-        return "-1".into_response();
+        return CommonResponse::InvalidRequest.into_response();
     }
 
-    let user = sqlx::query!(
-        r#"
-        SELECT * FROM users WHERE user_id = $1
-    "#,
-        target
-    )
-    .fetch_optional(&db)
-    .await
-    .unwrap();
-
-    if user.is_none() {
-        return "-1".into_response();
-    }
-
-    let user = user.unwrap();
+    let user =
+        match utilities::database::get_user_by_id(&db, data.account_id.unwrap_or_default()).await {
+            Some(user) => user,
+            None => {
+                return CommonResponse::InvalidRequest.into_response();
+            }
+        };
 
     let rank = sqlx::query_scalar!(
         r#"
@@ -430,7 +434,7 @@ async fn get_user_info(
     .unwrap();
 
     if account_info.is_none() {
-        return "-1".into_response();
+        return CommonResponse::InvalidRequest.into_response();
     }
 
     let account_info = account_info.unwrap();
@@ -444,7 +448,7 @@ async fn get_user_info(
     .unwrap();
 
     if account_role_assign.is_none() {
-        return "-1".into_response();
+        return CommonResponse::InvalidRequest.into_response();
     }
 
     let account_role = sqlx::query!(
@@ -504,9 +508,9 @@ async fn get_user_info(
     );
 
     if is_me {
-        let friend_requests = get_friend_requests_count(&db, me).await;
-        let messages = get_messages_count(&db, me).await;
-        let friends = get_friends_count(&db, me).await;
+        let friend_requests = get_friend_requests_count(&db, me).await.unwrap_or_default();
+        let messages = get_messages_count(&db, me).await.unwrap_or_default();
+        let friends = get_friends_count(&db, me).await.unwrap_or_default();
         response.push_str(&format!(
             ":38:{}:39:{}:40:{}:",
             messages, friend_requests, friends
@@ -517,33 +521,32 @@ async fn get_user_info(
     }
 
     response.push_str("29:1");
-    info!("{response:?}");
     response.into_response()
 }
 
 async fn get_user_comments(
     Extension(db): Extension<PgPool>,
     Form(data): Form<UserCommentsRequest>,
-) -> impl IntoResponse {
-    let account_id = data.account_id.unwrap_or_default();
-    let page = data.page.unwrap_or_default();
+) -> Response {
+    let Some(account_id) = data.account_id else {
+        return CommonResponse::InvalidRequest.into_response();
+    };
+    let Some(page) = data.page else {
+        return CommonResponse::InvalidRequest.into_response();
+    };
+
     let offset = (page * 10) as i64;
 
-    let user_id = match sqlx::query_scalar!(
-        r#"SELECT user_id FROM users WHERE ext_id = $1"#,
-        account_id.to_string()
-    )
-    .fetch_optional(&db)
-    .await
-    .unwrap()
-    {
-        Some(id) => id,
-        None => return "#0:0:0".into_response(),
+    let user = match utilities::database::get_user_by_id(&db, account_id).await {
+        Some(user) => user,
+        None => {
+            return "#0:0:0".into_response();
+        }
     };
 
     let comments = sqlx::query!(r#"
         SELECT comment, user_id, likes, is_spam, comment_id, timestamp FROM acc_comments WHERE user_id = $1 ORDER BY timestamp DESC LIMIT 10 OFFSET $2
-    "#, user_id, offset)
+    "#, user.user_id, offset)
         .fetch_all(&db)
         .await
         .unwrap();
@@ -556,7 +559,7 @@ async fn get_user_comments(
 
     let comment_count: Option<i64> = sqlx::query_scalar!(
         r#"SELECT COUNT(*) FROM acc_comments WHERE user_id = $1"#,
-        user_id
+        user.user_id
     )
     .fetch_one(&db)
     .await
@@ -592,12 +595,12 @@ async fn get_user_comments(
 async fn add_user_comment(
     Extension(db): Extension<PgPool>,
     Form(data): Form<PostCommentRequest>,
-) -> impl IntoResponse {
+) -> Response {
     let Some(account_id) = data.account_id else {
-        return "-1".into_response();
+        return CommonResponse::InvalidRequest.into_response();
     };
     let Some(comment) = data.comment.as_ref() else {
-        return "-1".into_response();
+        return CommonResponse::InvalidRequest.into_response();
     };
 
     let decoded_comment = crypto::decode_base64(comment);
@@ -611,16 +614,11 @@ async fn add_user_comment(
     }
 
     let username = data.username.clone().unwrap_or_default();
-    let user_id = match sqlx::query_scalar!(
-        r#"SELECT user_id FROM users WHERE ext_id = $1"#,
-        account_id.to_string()
-    )
-    .fetch_optional(&db)
-    .await
-    .unwrap()
-    {
-        Some(id) => id,
-        None => return "#0:0:0".into_response(),
+    let user = match utilities::database::get_user_by_id(&db, account_id).await {
+        Some(user) => user,
+        None => {
+            return "#0:0:0".into_response();
+        }
     };
 
     let timestamp = Utc::now().timestamp();
@@ -631,39 +629,32 @@ async fn add_user_comment(
         "#,
         username,
         comment,
-        user_id,
+        user.user_id,
         timestamp as i64
     )
     .execute(&db)
     .await
     .unwrap();
 
-    "1".into_response()
+    CommonResponse::Success.into_response()
 }
 
 async fn delete_user_comment(
     Extension(db): Extension<PgPool>,
     Form(data): Form<DeleteCommentRequest>,
-) -> impl IntoResponse {
+) -> Response {
     let Some(account_id) = data.account_id else {
-        return "-1".into_response();
+        return CommonResponse::InvalidRequest.into_response();
     };
     let Some(comment_id) = data.comment_id else {
-        return "-1".into_response();
+        return CommonResponse::InvalidRequest.into_response();
     };
 
-    let user_id = match sqlx::query_scalar!(
-        r#"
-        SELECT user_id FROM users WHERE ext_id = $1
-    "#,
-        account_id.to_string()
-    )
-    .fetch_optional(&db)
-    .await
-    .unwrap()
-    {
-        Some(id) => id,
-        None => return "-1".into_response(),
+    let user = match utilities::database::get_user_by_id(&db, account_id).await {
+        Some(user) => user,
+        None => {
+            return "#0:0:0".into_response();
+        }
     };
 
     let comment = sqlx::query!(
@@ -674,25 +665,25 @@ async fn delete_user_comment(
     .await;
 
     if comment.is_err() {
-        return "-1".into_response();
+        return CommonResponse::InvalidRequest.into_response();
     }
 
     sqlx::query!(
         "DELETE FROM acc_comments WHERE comment_id = $1 AND user_id = $2",
         comment_id,
-        user_id
+        user.user_id
     )
     .execute(&db)
     .await
     .unwrap();
 
-    "1".into_response()
+    CommonResponse::Success.into_response()
 }
 
 async fn update_user_settings(
     Extension(db): Extension<PgPool>,
     Form(data): Form<UpdateUserSettingsRequest>,
-) -> impl IntoResponse {
+) -> Response {
     let account_id = data.account_id.unwrap();
     let youtube = data.youtube.unwrap_or_default();
     let twitter = data.twitter.unwrap_or_default();
@@ -720,7 +711,7 @@ async fn update_user_settings(
     .await
     .unwrap();
 
-    "1".into_response()
+    CommonResponse::Success.into_response()
 }
 
 pub fn init() -> Router {
