@@ -144,11 +144,22 @@ async fn register_account(
         r#"
         INSERT INTO users (is_registered, ext_id, username, last_played)
         VALUES ($1, $2, $3, $4)
-    "#,
+        "#,
         1,
         account_result.account_id.to_string(),
         data.username,
         chrono::Utc::now().timestamp() as i32,
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+
+    sqlx::query!(
+        r#"
+        INSERT INTO role_assign (role_id, account_id)
+        VALUES (3, $1)
+        "#,
+        account_result.account_id as i64
     )
     .execute(&db)
     .await
@@ -172,11 +183,11 @@ async fn login_account(
         }
     };
 
-    if data.hash != account.gjp2.unwrap_or_default() {
-        return LoginResponse::WrongCredentials.into_response();
-    }
     if !account.is_active {
         return LoginResponse::AccountIsNotActivated.into_response();
+    }
+    if data.hash != account.gjp2.unwrap_or_default() {
+        return LoginResponse::WrongCredentials.into_response();
     }
 
     let user = match utilities::database::get_user_by_id(&db, account.account_id).await {

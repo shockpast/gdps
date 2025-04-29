@@ -7,9 +7,16 @@ use base64::{
 };
 use sha1::Digest as sha1Digest;
 
-// pub fn singular_xor(input: &str, key: u8) -> String {
-//     input.bytes().map(|b| (b ^ key) as char).collect()
-// }
+pub fn singluar_xor(string: &[u8], key: &[u8]) -> String {
+    let mut result: String = String::new();
+
+    for i in 0..string.len() {
+        let c = string[i] ^ key[i % key.len()];
+        result.push(c as char);
+    }
+
+    result
+}
 
 pub fn cyclic_xor(input: &str, key: &str) -> String {
     let key_bytes = key.as_bytes();
@@ -63,9 +70,9 @@ pub async fn hash_password(password: &str) -> String {
     .unwrap()
 }
 
-// pub fn encode_base64(input: &str) -> String {
-//     STANDARD.encode(input)
-// }
+pub fn encode_base64(input: &str) -> String {
+    STANDARD.encode(input)
+}
 
 pub fn encode_base64_url(input: &str) -> String {
     URL_SAFE.encode(input)
@@ -87,4 +94,19 @@ pub fn decode_base64_url_raw(input: &str) -> Vec<u8> {
     STANDARD
         .decode(input.replace('-', "+").replace('_', "/"))
         .unwrap_or_default()
+}
+
+pub fn generate_checksum(mut values: Vec<String>, key: &str, salt: &str) -> String {
+    values.push(salt.to_string());
+
+    let value_str = values.join("");
+
+    let mut hasher = sha1::Sha1::new();
+    hasher.update(value_str);
+
+    let hashed = hasher.finalize();
+    let hashed: &[u8] = hashed.as_slice();
+    let xored: String = singluar_xor(hex::encode(hashed).as_bytes(), key.as_bytes()).to_string();
+
+    encode_base64(&xored)
 }

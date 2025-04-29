@@ -442,7 +442,7 @@ struct UploadLevelCommentRequest {
     pub secret: String,
     #[serde(rename = "levelID")]
     pub level_id: i32,
-    pub percent: i32,
+    pub percent: Option<i32>,
     pub chk: String,
 }
 
@@ -1516,6 +1516,20 @@ async fn upload_level_comment(
         return CommonResponse::InvalidRequest.into_response();
     }
 
+    let percent = data.percent.unwrap_or_default();
+
+    // TODO: #clone() is skill issue
+    let checksum = vec![
+        data.username.clone(),
+        data.comment.clone(),
+        data.level_id.to_string(),
+        percent.to_string(),
+    ];
+    if data.chk != utilities::crypto::generate_checksum(checksum, "29481", "0xPT6iUrtws0J") {
+        tracing::info!("failed to verify checksum");
+        return CommonResponse::InvalidRequest.into_response();
+    }
+
     let account = match utilities::database::get_account_by_id(&db, data.account_id).await {
         Some(account) => account,
         None => {
@@ -1530,7 +1544,7 @@ async fn upload_level_comment(
     if data.comment.len() > 140 {
         return "temp_0_You cannot post comments above 140 characters!".into_response();
     }
-    if data.percent < 0 || data.percent > 100 {
+    if !(0..=100).contains(&percent) {
         return "temp_0_Invalid percentage!".into_response();
     }
 
@@ -1551,7 +1565,7 @@ async fn upload_level_comment(
         data.level_id,
         user.user_id,
         chrono::Utc::now().timestamp() as i32,
-        data.percent
+        percent
     )
     .execute(&db)
     .await

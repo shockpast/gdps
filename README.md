@@ -23,6 +23,7 @@ Geometry Dash Private Server implemented in Rust (PHP sucks ass, and the way cur
 ## Important Notes
 
 - You'll need to change URLs inside of GeometryDash.exe, that will be also the same size as `https://www.boomlings.com` *(25 bytes)*
+- It doesn't have any support (and not planned to) for versions lower than latest version of game [(2.207)](https://steamdb.info/patchnotes/16346964/)
 
 ## Credits
 

@@ -29,10 +29,10 @@ Names of Folders are from `incl` folder in Cvolton's and MegaSa1nt's repositorie
 
 ## messages
 
-- [ ] deleteGJMessages
-- [ ] downloadGJMessage
-- [ ] getGJMessages
-- [ ] uploadGJMessage
+- [x] deleteGJMessages
+- [x] downloadGJMessage
+- [x] getGJMessages
+- [x] uploadGJMessage
 
 ## misc
 
@@ -55,7 +55,7 @@ Names of Folders are from `incl` folder in Cvolton's and MegaSa1nt's repositorie
 - [ ] acceptGJFriendRequest
 - [ ] blockGJUser
 - [ ] deleteGJFriendRequests
-- [ ] getGJFriendRequests
+- [x] getGJFriendRequests
 - [ ] getGJUserList
 - [ ] readGJFriendRequest
 - [ ] removeGJFriend

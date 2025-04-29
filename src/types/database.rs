@@ -189,3 +189,29 @@ pub struct LevelScore {
     pub progresses: String,
     pub daily_id: i32,
 }
+
+#[derive(sqlx::FromRow, Deserialize, Debug, Default)]
+#[allow(unused)]
+pub struct FriendRequest {
+    pub account_id: i32,
+    pub to_account_id: i32,
+    pub comment: String,
+    pub upload_date: i32,
+    pub id: i32,
+    pub is_new: bool,
+}
+
+#[derive(sqlx::FromRow, Deserialize, Debug, Default)]
+#[allow(unused)]
+pub struct Message {
+    pub user_id: i32,
+    pub username: String,
+    pub body: String,
+    pub subject: String,
+    pub acc_id: i32,
+    pub message_id: i32,
+    pub to_account_id: i32,
+    pub timestamp: i32,
+    pub secret: String,
+    pub is_new: i32,
+}

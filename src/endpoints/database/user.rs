@@ -13,8 +13,11 @@ use serde::{Deserialize, Deserializer};
 use sqlx::PgPool;
 
 use crate::{
-    types::response::CommonResponse,
-    utilities::{self, crypto},
+    types::{
+        database::{FriendRequest, Message},
+        response::CommonResponse,
+    },
+    utilities::{self, crypto, database::get_user_by_id},
 };
 
 use super::COMMON_SECRET;
@@ -183,17 +186,17 @@ struct UpdateUserSettingsRequest {
     account_id: Option<i32>,
     #[serde(rename = "gjp2")]
     hash: String,
-    #[serde(rename = "mS")]
     // Allow Messages From:
-    // ALL, FRIENDS, NONE
+    // ALL(0), FRIENDS(1), NONE(2)
+    #[serde(rename = "mS")]
     allow_messages: i32,
-    #[serde(rename = "frS")]
     // Allow Friend Requests From:
-    // ALL, NONE
+    // ALL(0), NONE(1)
+    #[serde(rename = "frS")]
     allow_friend_requests: i32,
-    #[serde(rename = "cS")]
     // Show Comment History To:
-    // ALL, FRIENDS, ME
+    // ALL(0), FRIENDS(1), ME(2)
+    #[serde(rename = "cS")]
     show_comments_history: i32,
     #[serde(rename = "yt")]
     youtube: String,
@@ -213,6 +216,111 @@ struct GetUsersRequest {
     query: String,
     secret: String,
     page: Option<i32>,
+}
+
+#[derive(Deserialize, Debug)]
+#[allow(unused)]
+struct UploadMessageRequest {
+    #[serde(rename = "gameVersion")]
+    pub game_version: i32,
+    #[serde(rename = "binaryVersion")]
+    pub binary_version: i32,
+    #[serde(rename = "udid")]
+    pub id: String,
+    pub uuid: i32,
+    #[serde(rename = "accountID")]
+    pub account_id: i32,
+    #[serde(rename = "gjp2")]
+    pub hash: String,
+    #[serde(rename = "toAccountID")]
+    pub to_account_id: i32,
+    pub subject: String,
+    pub body: String,
+    pub secret: String,
+}
+
+#[derive(Deserialize, Debug)]
+#[allow(unused)]
+struct GetFriendsRequest {
+    #[serde(rename = "gameVersion")]
+    pub game_version: i32,
+    #[serde(rename = "binaryVersion")]
+    pub binary_version: i32,
+    #[serde(rename = "udid")]
+    pub id: String,
+    pub uuid: i32,
+    #[serde(rename = "accountID")]
+    pub account_id: i32,
+    #[serde(rename = "gjp2")]
+    pub hash: String,
+    pub page: i32,
+    pub total: i32,
+    pub secret: String,
+    pub get_sent: Option<i32>,
+}
+
+#[derive(Deserialize, Debug)]
+#[allow(unused)]
+struct GetMessagesRequest {
+    #[serde(rename = "gameVersion")]
+    pub game_version: i32,
+    #[serde(rename = "binaryVersion")]
+    pub binary_version: i32,
+    #[serde(rename = "udid")]
+    pub id: String,
+    pub uuid: i32,
+    #[serde(rename = "accountID")]
+    pub account_id: i32,
+    #[serde(rename = "gjp2")]
+    pub hash: String,
+    pub page: i32,
+    pub total: i32,
+    pub secret: String,
+    #[serde(rename = "getSent")]
+    pub get_sent: Option<i32>,
+}
+
+#[derive(Deserialize, Debug)]
+#[allow(unused)]
+struct DownloadMessageRequest {
+    #[serde(rename = "gameVersion")]
+    pub game_version: i32,
+    #[serde(rename = "binaryVersion")]
+    pub binary_version: i32,
+    #[serde(rename = "udid")]
+    pub id: String,
+    pub uuid: i32,
+    #[serde(rename = "accountID")]
+    pub account_id: i32,
+    #[serde(rename = "gjp2")]
+    pub hash: String,
+    #[serde(rename = "messageID")]
+    pub message_id: i32,
+    pub secret: String,
+    #[serde(rename = "isSender")]
+    pub is_sender: Option<i32>,
+}
+
+#[derive(Deserialize, Debug)]
+#[allow(unused)]
+struct DeleteMessageRequest {
+    #[serde(rename = "gameVersion")]
+    pub game_version: i32,
+    #[serde(rename = "binaryVersion")]
+    pub binary_version: i32,
+    #[serde(rename = "udid")]
+    pub id: String,
+    pub uuid: i32,
+    #[serde(rename = "accountID")]
+    pub account_id: i32,
+    #[serde(rename = "gjp2")]
+    pub hash: String,
+    #[serde(rename = "messageID")]
+    pub message_id: Option<i32>,
+    pub messages: Option<String>,
+    pub secret: String,
+    #[serde(rename = "isSender")]
+    pub is_sender: Option<i32>,
 }
 
 async fn get_friend_requests_count(db: &PgPool, account_id: i32) -> Option<i64> {
@@ -774,6 +882,377 @@ async fn get_users(
     .into_response()
 }
 
+async fn upload_message(
+    Extension(db): Extension<PgPool>,
+    Form(data): Form<UploadMessageRequest>,
+) -> Response {
+    if data.secret != COMMON_SECRET {
+        return CommonResponse::InvalidRequest.into_response();
+    }
+    if data.account_id == data.to_account_id {
+        return CommonResponse::InvalidRequest.into_response();
+    }
+
+    let sender_account = match utilities::database::get_account_by_id(&db, data.account_id).await {
+        Some(account) => account,
+        None => {
+            return CommonResponse::InvalidRequest.into_response();
+        }
+    };
+
+    if sender_account.gjp2.unwrap_or_default() != data.hash {
+        return CommonResponse::InvalidRequest.into_response();
+    }
+    if !sender_account.is_active {
+        return CommonResponse::InvalidRequest.into_response();
+    }
+
+    let sender_user = match utilities::database::get_user_by_id(&db, data.account_id).await {
+        Some(user) => user,
+        None => {
+            return CommonResponse::InvalidRequest.into_response();
+        }
+    };
+
+    if sender_user.is_banned == 1 {
+        return CommonResponse::InvalidRequest.into_response();
+    }
+
+    let is_blocked = sqlx::query!(
+        "SELECT id FROM blocks WHERE person1 = $1 AND person2 = $2",
+        data.to_account_id,
+        data.account_id
+    )
+    .fetch_optional(&db)
+    .await
+    .unwrap();
+
+    if sender_account.ms == 2 || is_blocked.is_some() {
+        return CommonResponse::InvalidRequest.into_response();
+    }
+
+    sqlx::query!(
+        r#"
+        INSERT INTO messages (subject, body, acc_id, user_id, username, to_account_id, secret, timestamp)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        "#,
+        data.subject, data.body, data.account_id, sender_user.user_id, sender_user.username, data.to_account_id, data.secret, chrono::Utc::now().timestamp() as i32
+    ).execute(&db).await.unwrap();
+
+    CommonResponse::Success.into_response()
+}
+
+async fn get_messages(
+    Extension(db): Extension<PgPool>,
+    Form(data): Form<GetMessagesRequest>,
+) -> Response {
+    if data.secret != COMMON_SECRET {
+        return CommonResponse::InvalidRequest.into_response();
+    }
+
+    let account = match utilities::database::get_account_by_id(&db, data.account_id).await {
+        Some(account) => account,
+        None => {
+            return CommonResponse::InvalidRequest.into_response();
+        }
+    };
+
+    if account.gjp2.unwrap_or_default() != data.hash {
+        return CommonResponse::InvalidRequest.into_response();
+    }
+
+    let get_sent = data.get_sent.unwrap_or_default();
+    let offset = data.page * 10;
+
+    let mut messages: Vec<Message> = Vec::new();
+
+    match get_sent {
+        0 => {
+            messages = sqlx::query_as!(
+                Message,
+                "SELECT * FROM messages WHERE to_account_id = $1 LIMIT 10 OFFSET $2",
+                data.account_id,
+                offset as i64
+            )
+            .fetch_all(&db)
+            .await
+            .unwrap();
+        }
+        1 => {
+            messages = sqlx::query_as!(
+                Message,
+                "SELECT * FROM messages WHERE acc_id = $1 LIMIT 10 OFFSET $2",
+                data.account_id,
+                offset as i64
+            )
+            .fetch_all(&db)
+            .await
+            .unwrap();
+        }
+        _ => {
+            return CommonResponse::InvalidRequest.into_response();
+        }
+    };
+
+    if messages.is_empty() {
+        return "-2".into_response();
+    }
+
+    let mut response = String::new();
+
+    for message in &messages {
+        let id = if get_sent == 0 {
+            message.acc_id
+        } else {
+            message.to_account_id
+        };
+
+        let user = match get_user_by_id(&db, id).await {
+            Some(user) => user,
+            None => {
+                tracing::error!(
+                    "{} couldn't be found in 'users' when fetching friend requests.",
+                    id
+                );
+                continue;
+            }
+        };
+
+        response.push_str(&format!(
+            "6:{}:3:{}:2:{}:1:{}:4:{}:8:{}:9:{}:7:{}|",
+            user.username,
+            user.user_id,
+            user.ext_id,
+            message.message_id,
+            message.subject,
+            message.is_new,
+            get_sent,
+            utilities::make_time(message.timestamp as i64)
+        ));
+    }
+
+    let _ = response.trim_end_matches("|");
+    format!("{}#{}:{}:10", response, messages.len(), offset).into_response()
+}
+
+async fn download_message(
+    Extension(db): Extension<PgPool>,
+    Form(data): Form<DownloadMessageRequest>,
+) -> Response {
+    if data.secret != COMMON_SECRET {
+        return CommonResponse::InvalidRequest.into_response();
+    }
+
+    let account = match utilities::database::get_account_by_id(&db, data.account_id).await {
+        Some(account) => account,
+        None => {
+            return CommonResponse::InvalidRequest.into_response();
+        }
+    };
+
+    if account.gjp2.unwrap_or_default() != data.hash {
+        return CommonResponse::InvalidRequest.into_response();
+    }
+
+    let is_sender = data.is_sender.unwrap_or_default();
+
+    let message = sqlx::query!(
+        "SELECT * FROM messages WHERE message_id = $1 AND (acc_id = $2 OR to_account_id = $2) LIMIT 1",
+        data.message_id, data.account_id
+    ).fetch_one(&db).await.unwrap();
+
+    if is_sender != 1 {
+        sqlx::query!(
+            "UPDATE messages SET is_new = 1 WHERE message_id = $1 AND to_account_id = $2",
+            data.message_id,
+            data.account_id
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+    }
+
+    format!(
+        "6:{}:3:{}:2:{}:1:{}:4:{}:8:{}:9:{}:5:{}:7:{}",
+        message.username,
+        message.acc_id,
+        message.acc_id,
+        message.message_id,
+        message.subject,
+        message.is_new,
+        is_sender,
+        message.body,
+        utilities::make_time(message.timestamp as i64)
+    )
+    .into_response()
+}
+
+// TODO: rewrite this if-else condition ladder
+async fn delete_message(
+    Extension(db): Extension<PgPool>,
+    Form(data): Form<DeleteMessageRequest>,
+) -> Response {
+    if data.secret != COMMON_SECRET {
+        return CommonResponse::InvalidRequest.into_response();
+    }
+
+    let account = match utilities::database::get_account_by_id(&db, data.account_id).await {
+        Some(account) => account,
+        None => {
+            return CommonResponse::InvalidRequest.into_response();
+        }
+    };
+
+    if account.gjp2.unwrap_or_default() != data.hash {
+        return CommonResponse::InvalidRequest.into_response();
+    }
+
+    let is_sender = data.is_sender.unwrap_or_default();
+
+    let messages = data.messages.unwrap_or_default();
+    let message_id = data.message_id.unwrap_or_default();
+
+    if !messages.is_empty() {
+        let message_ids = messages
+            .split_terminator(",")
+            .collect::<Vec<_>>()
+            .iter()
+            .map(|m| m.parse::<i32>().unwrap())
+            .collect::<Vec<_>>();
+
+        sqlx::query!(
+            "DELETE FROM messages WHERE message_id = ANY($1) AND acc_id = $2",
+            &message_ids,
+            data.account_id
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        sqlx::query!(
+            "DELETE FROM messages WHERE message_id = ANY($1) AND to_account_id = $2",
+            &message_ids,
+            data.account_id
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+    } else {
+        sqlx::query!(
+            "DELETE FROM messages WHERE message_id = $1 AND acc_id = $2",
+            message_id,
+            data.account_id
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        sqlx::query!(
+            "DELETE FROM messages WHERE message_id = $1 AND to_account_id = $2",
+            message_id,
+            data.account_id
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+    }
+
+    CommonResponse::Success.into_response()
+}
+
+async fn get_friends(
+    Extension(db): Extension<PgPool>,
+    Form(data): Form<GetFriendsRequest>,
+) -> Response {
+    if data.secret != COMMON_SECRET {
+        return CommonResponse::InvalidRequest.into_response();
+    }
+
+    let get_sent = data.get_sent.unwrap_or_default();
+    let offset = data.page * 10;
+
+    let account = match utilities::database::get_account_by_id(&db, data.account_id).await {
+        Some(account) => account,
+        None => {
+            return CommonResponse::InvalidRequest.into_response();
+        }
+    };
+
+    if account.gjp2.unwrap_or_default() != data.hash {
+        return CommonResponse::InvalidRequest.into_response();
+    }
+
+    let mut friend_requests: Vec<FriendRequest> = Vec::new();
+
+    match data.get_sent.unwrap_or_default() {
+        0 => {
+            friend_requests = sqlx::query_as!(
+                FriendRequest,
+                "SELECT * FROM friend_requests WHERE to_account_id = $1 LIMIT 10 OFFSET $2",
+                data.account_id,
+                offset as i64
+            )
+            .fetch_all(&db)
+            .await
+            .unwrap();
+        }
+        1 => {
+            friend_requests = sqlx::query_as!(
+                FriendRequest,
+                "SELECT * FROM friend_requests WHERE account_id = $1 LIMIT 10 OFFSET $2",
+                data.account_id,
+                offset as i64
+            )
+            .fetch_all(&db)
+            .await
+            .unwrap();
+        }
+        _ => {
+            return CommonResponse::InvalidRequest.into_response();
+        }
+    };
+
+    let mut response = String::new();
+
+    for friend_request in &friend_requests {
+        let sender_id = if get_sent == 0 {
+            friend_request.account_id
+        } else {
+            friend_request.to_account_id
+        };
+
+        let sender_user = match get_user_by_id(&db, sender_id).await {
+            Some(user) => user,
+            None => {
+                tracing::error!(
+                    "{} couldn't be found in 'users' when fetching friend requests.",
+                    sender_id
+                );
+                continue;
+            }
+        };
+
+        response.push_str(&format!(
+            "1:{}:2:{}:9:{}:10:{}:11:{}:14:{}:15:{}:16:{}:32:{}:35:{}:41:{}:37:{}|",
+            sender_user.username,
+            sender_user.user_id,
+            sender_user.icon,
+            sender_user.color1,
+            sender_user.color2,
+            sender_user.icon_type,
+            sender_user.special,
+            sender_user.ext_id,
+            friend_request.id,
+            friend_request.comment,
+            friend_request.is_new,
+            utilities::make_time(friend_request.upload_date as i64)
+        ))
+    }
+
+    let _ = response.trim_end_matches("|");
+    format!("{}#{}:{}:10", response, friend_requests.len(), offset).into_response()
+}
+
 pub fn init() -> Router {
     Router::new()
         .route(
@@ -795,4 +1274,9 @@ pub fn init() -> Router {
             post(update_user_scores),
         )
         .route("/database/getGJUsers20.php", post(get_users))
+        .route("/database/getGJFriendRequests20.php", post(get_friends))
+        .route("/database/uploadGJMessage20.php", post(upload_message))
+        .route("/database/getGJMessages20.php", post(get_messages))
+        .route("/database/downloadGJMessage20.php", post(download_message))
+        .route("/database/deleteGJMessages20.php", post(delete_message))
 }
