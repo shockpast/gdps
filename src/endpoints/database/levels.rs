@@ -1,18 +1,27 @@
-use axum::{Extension, Router, response::IntoResponse, routing::post};
+use std::net::SocketAddr;
+
+use axum::{
+    Extension, Router,
+    extract::ConnectInfo,
+    response::{IntoResponse, Response},
+    routing::post,
+};
 use axum_extra::extract::Form;
 use serde::{Deserialize, Deserializer};
 use sha1::{Digest, Sha1};
 use sqlx::PgPool;
-use tokio::fs::{read, rename, write};
+use tokio::fs::{read, rename, try_exists, write};
 use tracing::error;
 
 use crate::{
     types::{
-        database::Level,
+        database::{Level, LevelScore},
         response::{CommonResponse, LevelUploadResponse},
     },
     utilities,
 };
+
+use super::{COMMON_SECRET, LEVEL_SECRET, MOD_SECRET};
 
 fn deserialize_enum_from_int<'de, D>(deserializer: D) -> Result<Option<QueryType>, D::Error>
 where
@@ -42,6 +51,15 @@ where
         27 => Ok(Some(QueryType::SentLevels)),
         _ => Ok(None),
     }
+}
+
+pub fn take_first<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    let vec: Vec<T> = Vec::deserialize(deserializer)?;
+    Ok(vec.into_iter().next())
 }
 
 #[derive(Deserialize, Debug)]
@@ -104,15 +122,15 @@ struct UploadLevelRequest {
     #[serde(default, rename = "levelString")]
     pub level_string: String,
     #[serde(default, rename = "levelInfo")]
-    pub level_info: String,
+    pub level_info: Option<String>,
     #[serde(default, rename = "unlisted")]
     pub unlisted: i32,
     #[serde(default, rename = "ldm")]
     pub is_ldm: i32,
-    #[serde(default, rename = "wt")]
-    pub wt: i32,
-    #[serde(default, rename = "wt2")]
-    pub wt2: i32,
+    // The amount of time spent in the editor of a level (local copy)
+    pub wt: Option<i32>,
+    // The amount of time spent in the editor of a level (previous copies)
+    pub wt2: Option<i32>,
     #[serde(default, rename = "settingsString")]
     pub settings_string: String,
     #[serde(default, rename = "songIDs")]
@@ -136,7 +154,7 @@ struct UploadLevelRequest {
     #[serde(rename = "levelVersion")]
     pub level_version: Option<i32>,
     #[serde(default)]
-    pub seed: String,
+    pub seed: Option<String>,
     #[serde(default)]
     pub seed2: String,
     #[serde(default)]
@@ -211,8 +229,8 @@ struct GetLevelsRequest {
 #[derive(Deserialize, Debug, Default)]
 #[allow(unused)]
 struct DownloadLevelRequest {
-    #[serde(rename = "gameVersion")]
-    pub game_version: i32,
+    #[serde(rename = "gameVersion", deserialize_with = "take_first")]
+    pub game_version: Option<i32>,
     #[serde(rename = "binaryVersion")]
     pub binary_version: i32,
     #[serde(rename = "udid")]
@@ -233,6 +251,222 @@ struct DownloadLevelRequest {
     #[serde(rename = "chk")]
     pub checksum: Option<String>,
     pub extras: Option<String>,
+}
+
+#[derive(Deserialize, Debug)]
+#[allow(unused)]
+struct DeleteLevelRequest {
+    #[serde(rename = "gameVersion")]
+    pub game_version: i32,
+    #[serde(rename = "binaryVersion")]
+    pub binary_version: i32,
+    #[serde(rename = "udid")]
+    pub id: String,
+    #[serde(rename = "uuid")]
+    pub user_id: i32,
+    #[serde(rename = "accountID")]
+    pub account_id: i32,
+    #[serde(rename = "gjp2")]
+    pub hash: String,
+    #[serde(rename = "levelID")]
+    pub level_id: i32,
+    pub secret: String,
+}
+
+#[derive(Deserialize, Debug)]
+#[allow(unused)]
+struct SuggestStarsRequest {
+    #[serde(rename = "gameVersion")]
+    pub game_version: i32,
+    #[serde(rename = "binaryVersion")]
+    pub binary_version: i32,
+    #[serde(rename = "udid")]
+    pub id: String,
+    pub uuid: i32,
+    #[serde(rename = "accountID")]
+    pub account_id: i32,
+    #[serde(rename = "gjp2")]
+    pub hash: String,
+    #[serde(rename = "levelID")]
+    pub level_id: i32,
+    pub stars: i32,
+    pub feature: i32,
+    pub secret: String,
+}
+
+#[derive(Deserialize, Debug)]
+#[allow(unused)]
+struct RateStarsRequest {
+    #[serde(rename = "gameVersion")]
+    pub game_version: i32,
+    #[serde(rename = "binaryVersion")]
+    pub binary_version: i32,
+    #[serde(rename = "udid")]
+    pub id: String,
+    #[serde(rename = "uuid")]
+    pub user_id: i32,
+    #[serde(rename = "accountID")]
+    pub account_id: i32,
+    #[serde(rename = "gjp2")]
+    pub hash: String,
+    #[serde(rename = "levelID")]
+    pub level_id: i32,
+    pub stars: i32,
+    pub secret: String,
+    #[serde(rename = "rs")]
+    pub random_string: String,
+    #[serde(rename = "chk")]
+    pub checksum: String,
+}
+
+#[derive(Deserialize, Debug)]
+#[allow(unused)]
+struct RateDemonRequest {
+    #[serde(rename = "gameVersion")]
+    pub game_version: i32,
+    #[serde(rename = "binaryVersion")]
+    pub binary_version: i32,
+    #[serde(rename = "udid")]
+    pub id: String,
+    #[serde(rename = "uuid")]
+    pub user_id: i32,
+    #[serde(rename = "accountID")]
+    pub account_id: i32,
+    #[serde(rename = "gjp2")]
+    pub hash: String,
+    #[serde(rename = "levelID")]
+    pub level_id: i32,
+    pub rating: i32,
+    pub secret: String,
+    #[serde(rename = "rs")]
+    pub random_string: String,
+    #[serde(rename = "chk")]
+    pub checksum: String,
+}
+
+#[derive(Deserialize, Debug)]
+#[allow(unused)]
+struct ReportLevelRequest {
+    #[serde(rename = "levelID")]
+    pub level_id: i32,
+    pub secret: String,
+}
+
+#[derive(Deserialize, Debug)]
+#[allow(unused)]
+struct UpdateDescriptionRequest {
+    #[serde(rename = "gameVersion")]
+    pub game_version: i32,
+    #[serde(rename = "binaryVersion")]
+    pub binary_version: i32,
+    #[serde(rename = "udid")]
+    pub id: String,
+    pub uuid: i32,
+    #[serde(rename = "accountID")]
+    pub account_id: i32,
+    #[serde(rename = "gjp2")]
+    pub hash: String,
+    #[serde(rename = "levelID")]
+    pub level_id: i32,
+    #[serde(rename = "levelDesc")]
+    pub level_description: String,
+    pub secret: String,
+}
+
+#[derive(Deserialize, Debug)]
+#[allow(unused)]
+struct GetLevelScoresRequest {
+    #[serde(rename = "gameVersion")]
+    pub game_version: i32,
+    #[serde(rename = "binaryVersion")]
+    pub binary_version: i32,
+    #[serde(rename = "udid")]
+    pub id: String,
+    pub uuid: i32,
+    #[serde(rename = "accountID")]
+    pub account_id: i32,
+    #[serde(rename = "gjp2")]
+    pub hash: String,
+    #[serde(rename = "levelID")]
+    pub level_id: i32,
+    pub percent: i32,
+    #[serde(rename = "time")] // Always 0 for this endpoint
+    pub _time: i32,
+    #[serde(rename = "points")] // Always 0 for this endpoint
+    pub _points: i32,
+    #[serde(rename = "plat")] // Always 0 for this endpoint
+    pub _plat: i32,
+    pub secret: String,
+    #[serde(rename = "type", default = "default_leaderboard_type")]
+    pub leaderboard_type: i32,
+    pub mode: i32,
+    #[serde(rename = "s1")]
+    pub attempts: Option<i32>,
+    #[serde(rename = "s2")]
+    pub clicks: Option<i32>,
+    #[serde(rename = "s3")]
+    pub time: Option<i32>,
+    #[serde(rename = "s4")]
+    pub level_seed: Option<i32>,
+    pub s5: Option<i32>,
+    #[serde(rename = "s6")]
+    pub pb_differences: Option<String>,
+    pub s7: Option<String>,
+    #[serde(rename = "s8")]
+    pub attempt_count: Option<i32>,
+    #[serde(rename = "s9")]
+    pub coins: Option<i32>,
+    #[serde(rename = "s10")]
+    pub timely_id: Option<i32>,
+    #[serde(rename = "chk")]
+    pub checksum: String,
+}
+
+#[derive(Deserialize, Debug)]
+#[allow(unused)]
+struct UploadLevelCommentRequest {
+    #[serde(rename = "gameVersion")]
+    pub game_version: i32,
+    #[serde(rename = "binaryVersion")]
+    pub binary_version: i32,
+    #[serde(rename = "udid")]
+    pub id: String,
+    pub uuid: i32,
+    #[serde(rename = "accountID")]
+    pub account_id: i32,
+    #[serde(rename = "gjp2")]
+    pub hash: String,
+    #[serde(rename = "userName")]
+    pub username: String,
+    pub comment: String,
+    pub secret: String,
+    #[serde(rename = "levelID")]
+    pub level_id: i32,
+    pub percent: i32,
+    pub chk: String,
+}
+
+#[derive(Deserialize, Debug)]
+#[allow(unused)]
+struct GetLevelCommentsRequest {
+    #[serde(rename = "gameVersion")]
+    pub game_version: i32,
+    #[serde(rename = "binaryVersion")]
+    pub binary_version: i32,
+    #[serde(rename = "udid")]
+    pub id: String,
+    pub uuid: i32,
+    #[serde(rename = "accountID")]
+    pub account_id: i32,
+    #[serde(rename = "gjp2")]
+    pub hash: String,
+    pub page: i32,
+    pub total: i32,
+    pub secret: String,
+    pub mode: i32,
+    #[serde(rename = "levelID")]
+    pub level_id: i32,
+    pub count: Option<i32>,
 }
 
 #[derive(sqlx::FromRow, Deserialize, Debug, Default)]
@@ -262,13 +496,21 @@ fn default_level_name() -> String {
 }
 
 fn default_extra_string() -> String {
-    "29_29_29_40_29_29_29_29_29_29_29_29_29_29_29_29".into()
+    "0_46_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0".into()
+}
+
+fn default_leaderboard_type() -> i32 {
+    0
 }
 
 async fn upload_level(
     Extension(db): Extension<PgPool>,
     Form(data): Form<UploadLevelRequest>,
-) -> impl IntoResponse {
+) -> Response {
+    if data.secret != COMMON_SECRET {
+        return CommonResponse::InvalidRequest.into_response();
+    }
+
     if data.account_id.unwrap_or(0) == 0 || data.user_id.unwrap_or(0) == 0 {
         return CommonResponse::InvalidRequest.into_response();
     }
@@ -276,16 +518,11 @@ async fn upload_level(
     let account_id = data.account_id.unwrap();
     let user_id = data.user_id.unwrap();
 
-    let account = match sqlx::query!(
-        "SELECT gjp2 FROM accounts WHERE account_id = $1",
-        account_id
-    )
-    .fetch_optional(&db)
-    .await
-    .unwrap()
-    {
-        Some(acc) => acc,
-        None => return CommonResponse::InvalidRequest.into_response(),
+    let account = match utilities::database::get_account_by_id(&db, account_id).await {
+        Some(account) => account,
+        None => {
+            return CommonResponse::InvalidRequest.into_response();
+        }
     };
 
     if data.hash != account.gjp2 {
@@ -316,7 +553,7 @@ async fn upload_level(
                     is_ldm = $17, wt = $18, wt2 = $19, unlisted2 = $20, settings_string = $21, song_ids = $22, sfx_ids = $23, ts = $24, password = $25, update_date = $26
             WHERE level_id = $27
         "#, data.game_version, data.binary_version, data.level_description, data.level_length, data.audio_track, data.auto, data.original, data.two_player, data.song_id,
-            data.objects, data.coins, data.requested_stars, data.extra_string, data.level_string, data.level_info, data.unlisted, data.is_ldm, data.wt, data.wt2, 0,
+            data.objects, data.coins, data.requested_stars, data.extra_string, data.level_string, data.level_info.unwrap_or_default(), data.unlisted, data.is_ldm, data.wt, data.wt2, 0,
             data.settings_string, data.song_ids, data.sfx_ids, data.ts, data.password, chrono::Utc::now().timestamp() as i32, data.level_id)
             .execute(&db)
             .await
@@ -328,7 +565,6 @@ async fn upload_level(
     let timestamp = chrono::Utc::now().timestamp();
 
     let temporary_level_path = format!("./data/levels/{}_{}", user_id, timestamp);
-    let level_path = format!("./data/levels/{}", data.level_id);
 
     let level_write_result = write(&temporary_level_path, &data.level_string).await;
     if level_write_result.is_err() {
@@ -354,7 +590,7 @@ async fn upload_level(
         "#,
         data.user_id, data.account_id.map(|id| id.to_string()).unwrap_or_default(), data.username.as_deref().unwrap_or(""), data.game_version, data.binary_version,
         data.level_name, data.level_description, 1, data.level_length, data.audio_track, data.auto, data.original,
-        data.two_player, data.song_id, data.objects, data.coins, data.requested_stars, data.extra_string, data.level_string, data.level_info,
+        data.two_player, data.song_id, data.objects, data.coins, data.requested_stars, data.extra_string, data.level_string, data.level_info.unwrap_or_default(),
         data.secret, data.unlisted, data.is_ldm, data.wt, data.wt2, data.settings_string, data.song_ids, data.sfx_ids,
         data.ts, data.password, timestamp, timestamp, ""
     )
@@ -362,15 +598,24 @@ async fn upload_level(
     .await
     .unwrap();
 
-    rename(temporary_level_path, level_path).await.unwrap();
+    rename(
+        temporary_level_path,
+        format!("data/levels/{}", &level_insert.level_id),
+    )
+    .await
+    .unwrap();
 
     format!("{}", level_insert.level_id).into_response()
 }
 
-async fn get_level(
+async fn get_levels(
     Extension(db): Extension<PgPool>,
     Form(data): Form<GetLevelsRequest>,
-) -> impl IntoResponse {
+) -> Response {
+    if data.secret.unwrap_or_default() != COMMON_SECRET {
+        return CommonResponse::InvalidRequest.into_response();
+    }
+
     let user_id = data.user_id.unwrap_or_default();
     if user_id == 0 {
         return CommonResponse::InvalidRequest.into_response();
@@ -519,7 +764,10 @@ async fn get_level(
                             }
                         }
                         _ => {
-                            filters.push(format!("level_name ILIKE '%{}%'", query));
+                            filters.push(format!(
+                                "level_name ILIKE '%{}%' OR level_id LIKE '%{}%'",
+                                query, query
+                            ));
                         }
                     }
                 }
@@ -686,11 +934,12 @@ async fn get_level(
         };
 
         result_string += &format!(
-            "1:{}:2:{}:5:{}:6:{}:8:10:9:{}:10:{}:12:{}:13:{}:14:{}:{}:43:{}:{}:18:{}:19:{}:42:{}:45:{}:3:{}:15:{}:30:{}:31:{}:37:{}:38:{}:39:{}:46:{}:47:{}:35:{}|",
+            "1:{}:2:{}:5:{}:6:{}:8:{}:9:{}:10:{}:11:1:12:{}:13:{}:14:{}:{}:43:{}:{}:18:{}:19:{}:42:{}:45:{}:3:{}:15:{}:30:{}:31:{}:37:{}:38:{}:39:{}:46:{}:47:{}:35:{}|",
             level.level_id,
             level.level_name,
             level.level_version,
             level.user_id,
+            "10",
             level.star_difficulty,
             level.downloads,
             level.audio_track,
@@ -703,7 +952,7 @@ async fn get_level(
             level.star_featured,
             level.star_epic,
             level.objects,
-            utilities::crypto::encode_base64(&level.level_desc),
+            utilities::crypto::decode_base64(&level.level_desc),
             level.level_length,
             level.original,
             level.two_player,
@@ -767,19 +1016,18 @@ async fn get_level(
 async fn download_level(
     Extension(db): Extension<PgPool>,
     Form(data): Form<DownloadLevelRequest>,
-) -> impl IntoResponse {
+) -> Response {
+    if data.secret.unwrap_or_default() != COMMON_SECRET {
+        return CommonResponse::InvalidRequest.into_response();
+    }
+
     let account_id = data.account_id.unwrap();
 
-    let account = match sqlx::query!(
-        "SELECT gjp2, username, account_id FROM accounts WHERE account_id = $1",
-        account_id
-    )
-    .fetch_optional(&db)
-    .await
-    .unwrap()
-    {
-        Some(acc) => acc,
-        None => return CommonResponse::InvalidRequest.into_response(),
+    let account = match utilities::database::get_account_by_id(&db, account_id).await {
+        Some(account) => account,
+        None => {
+            return CommonResponse::InvalidRequest.into_response();
+        }
     };
 
     if data.hash != account.gjp2 {
@@ -798,7 +1046,15 @@ async fn download_level(
         _ => level.level_string.unwrap(),
     };
 
-    let mut out: String = format!("1:{}:2:{}:3:{}:4:{}:5:{}:6:{}:8:{}:9:{}:10:{}:12:{}:13:{}:14:{}:17:{}:43:{}:25:{}:18:{}:19:{}:42:{}:45:{}:15:{}:30:{}:31:{}:28:{}:29:{}:35:{}:36:{}:37:{}:38:{}:39:{}:46:{}:47:{}:40:{}:27:{}",
+    sqlx::query!(
+        "UPDATE levels SET downloads = downloads + 1 WHERE level_id = $1",
+        level.level_id
+    )
+    .execute(&db)
+    .await
+    .ok();
+
+    format!("1:{}:2:{}:3:{}:4:{}:5:{}:6:{}:8:{}:9:{}:10:{}:12:{}:13:{}:14:{}:17:{}:43:{}:25:{}:18:{}:19:{}:42:{}:45:{}:15:{}:30:{}:31:{}:28:{}:29:{}:35:{}:36:{}:37:{}:38:{}:39:{}:46:{}:47:{}:40:{}:27:{}#{}#{}",
         level.level_id,
         level.level_name,
         level.level_desc,
@@ -828,20 +1084,11 @@ async fn download_level(
         level.coins,
         level.star_coins as u8,
         level.requested_stars,
-        "",
-        "",
+        level.wt,
+        level.wt2,
         level.is_ldm as u8,
-        ""
-    ).to_string();
-
-    out = format!(
-        "{}#{}",
-        out,
-        utilities::crypto::hash_level_string(level_string)
-    );
-    out = format!(
-        "{}#{}",
-        out,
+        "",
+        utilities::crypto::hash_level_string(&level_string),
         utilities::crypto::sha1_salt(
             &format!(
                 "{},{},{},{},{},{},{},{}",
@@ -856,14 +1103,550 @@ async fn download_level(
             ),
             "xI25fpAapCQg"
         )
+    ).into_response()
+}
+
+async fn delete_level(
+    Extension(db): Extension<PgPool>,
+    Form(data): Form<DeleteLevelRequest>,
+) -> Response {
+    if data.secret != LEVEL_SECRET {
+        return CommonResponse::InvalidRequest.into_response();
+    }
+
+    let account = match utilities::database::get_account_by_id(&db, data.account_id).await {
+        Some(account) => account,
+        None => {
+            return CommonResponse::InvalidRequest.into_response();
+        }
+    };
+
+    if account.gjp2.unwrap_or_default() != data.hash {
+        return CommonResponse::InvalidRequest.into_response();
+    }
+
+    let user = match utilities::database::get_user_by_id(&db, data.account_id).await {
+        Some(user) => user,
+        None => {
+            return CommonResponse::InvalidRequest.into_response();
+        }
+    };
+
+    let level = match utilities::database::get_level_by_id(&db, data.level_id).await {
+        Some(level) => level,
+        None => {
+            return CommonResponse::InvalidRequest.into_response();
+        }
+    };
+
+    if level.user_id != data.user_id {
+        return CommonResponse::InvalidRequest.into_response();
+    }
+
+    sqlx::query!("DELETE FROM comments WHERE level_id = $1", data.level_id)
+        .execute(&db)
+        .await
+        .unwrap();
+
+    sqlx::query!(
+        "DELETE FROM levels WHERE level_id = $1 AND user_id = $2",
+        data.level_id,
+        user.user_id
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+
+    if level.star_stars > 0 {
+        sqlx::query!(
+            "UPDATE users SET creator_points = creator_points - $1 WHERE user_id = $2",
+            (level.star_featured + 1) as f64,
+            user.user_id
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+    }
+
+    let level_path = format!("data/levels/{}", data.level_id);
+    let deleted_level_path = format!("data/levels/deleted/{}", data.level_id);
+
+    if try_exists(&level_path).await.is_ok() {
+        rename(level_path, deleted_level_path).await.unwrap();
+    }
+
+    CommonResponse::Success.into_response()
+}
+
+async fn suggest_stars(
+    Extension(db): Extension<PgPool>,
+    Form(data): Form<SuggestStarsRequest>,
+) -> Response {
+    if data.secret != MOD_SECRET {
+        return CommonResponse::InvalidRequest.into_response();
+    }
+
+    let account = match utilities::database::get_account_by_id(&db, data.account_id).await {
+        Some(account) => account,
+        None => {
+            return CommonResponse::InvalidRequest.into_response();
+        }
+    };
+
+    if data.hash != account.gjp2.unwrap_or_default() {
+        return CommonResponse::InvalidRequest.into_response();
+    }
+
+    let role = match utilities::database::get_user_role(&db, data.account_id).await {
+        Some(role) => role,
+        None => {
+            return CommonResponse::InvalidRequest.into_response();
+        }
+    };
+
+    let level = match utilities::database::get_level_by_id(&db, data.level_id).await {
+        Some(level) => level,
+        None => {
+            return CommonResponse::InvalidRequest.into_response();
+        }
+    };
+
+    let difficulty = utilities::gd::get_difficulty_from_stars(data.stars);
+
+    let epic = (data.feature - 1).clamp(0, 3);
+    let feature = if epic == 0 {
+        0
+    } else {
+        level.star_featured + 1
+    };
+
+    if role.action_rate_stars == 1 {
+        // Feature Level and Verify Coins.
+        sqlx::query!(
+            "UPDATE levels SET star_featured = $1, star_epic = $2, star_coins = 1, rate_date = $3 WHERE level_id = $4",
+            feature, epic, chrono::Utc::now().timestamp() as i32, data.level_id
+        ).execute(&db).await.unwrap();
+
+        // Rate Level.
+        sqlx::query!(
+            "UPDATE levels SET star_demon = $1, star_auto = $2, star_difficulty = $3, star_stars = $4, rate_date = $5 WHERE level_id = $6",
+            difficulty.is_demon as i32, difficulty.is_auto as i16, difficulty.difficulty, data.stars, chrono::Utc::now().timestamp() as i32, data.level_id
+        ).execute(&db).await.unwrap();
+
+        // Creator Points.
+        sqlx::query!(
+            "UPDATE users SET creator_points = $1 WHERE user_id = $2",
+            (data.feature + 1) as f64,
+            level.user_id
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        return CommonResponse::Success.into_response();
+    } else if role.action_suggest_rating == 1 {
+        sqlx::query!(
+            r#"INSERT INTO suggest (suggest_by, suggest_level_id, suggest_difficulty, suggest_stars, suggest_featured, suggest_auto, suggest_demon, timestamp)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"#,
+            data.account_id, data.level_id, difficulty.difficulty, data.stars, data.feature, difficulty.is_auto as i32, difficulty.is_demon as i32, chrono::Utc::now().timestamp() as i32
+        ).execute(&db).await.unwrap();
+
+        return CommonResponse::Success.into_response();
+    }
+
+    "-2".into_response()
+}
+
+async fn rate_stars(
+    Extension(db): Extension<PgPool>,
+    Form(data): Form<RateStarsRequest>,
+) -> Response {
+    let account = match utilities::database::get_account_by_id(&db, data.account_id).await {
+        Some(account) => account,
+        None => {
+            return CommonResponse::InvalidRequest.into_response();
+        }
+    };
+
+    if data.hash != account.gjp2.unwrap_or_default() {
+        return CommonResponse::InvalidRequest.into_response();
+    }
+
+    let role = match utilities::database::get_user_role(&db, data.account_id).await {
+        Some(role) => role,
+        None => {
+            return CommonResponse::InvalidRequest.into_response();
+        }
+    };
+
+    // I don't think people are supposed to rate Demon without stars.
+    if role.action_rate_stars == 1 && data.stars != 10 {
+        let difficulty = utilities::gd::get_difficulty_from_stars(data.stars);
+
+        sqlx::query!(
+            "UPDATE levels SET star_demon = $1, star_auto = $2, star_difficulty = $3, rate_date = $4 WHERE level_id = $5",
+            difficulty.is_demon as i32, difficulty.is_auto as i16, difficulty.difficulty, chrono::Utc::now().timestamp() as i32, data.level_id
+        ).execute(&db).await.unwrap();
+    }
+
+    CommonResponse::Success.into_response()
+}
+
+async fn rate_demon(
+    Extension(db): Extension<PgPool>,
+    Form(data): Form<RateDemonRequest>,
+) -> Response {
+    let account = match utilities::database::get_account_by_id(&db, data.account_id).await {
+        Some(account) => account,
+        None => {
+            return CommonResponse::InvalidRequest.into_response();
+        }
+    };
+
+    if data.hash != account.gjp2.unwrap_or_default() {
+        return CommonResponse::InvalidRequest.into_response();
+    }
+
+    let role = match utilities::database::get_user_role(&db, data.account_id).await {
+        Some(role) => role,
+        None => {
+            return CommonResponse::InvalidRequest.into_response();
+        }
+    };
+
+    if role.action_rate_demon != 1 {
+        return CommonResponse::InvalidRequest.into_response();
+    }
+
+    let demon = utilities::gd::get_demon_from_index(data.rating);
+    sqlx::query!(
+        "UPDATE levels SET star_demon_diff = $1 WHERE level_id = $2",
+        demon.difficulty,
+        data.level_id
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+
+    CommonResponse::Success.into_response()
+}
+
+async fn report_level(
+    Extension(db): Extension<PgPool>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Form(data): Form<ReportLevelRequest>,
+) -> Response {
+    if data.secret != COMMON_SECRET {
+        return CommonResponse::InvalidRequest.into_response();
+    }
+
+    let report = sqlx::query!(
+        "SELECT count(*) FROM reports WHERE level_id = $1 AND hostname = $2",
+        data.level_id,
+        addr.to_string()
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+
+    if report.count.unwrap_or_default() == 0 {
+        let inserted_report = sqlx::query!(
+            "INSERT INTO reports (level_id, hostname) VALUES ($1, $2) RETURNING id",
+            data.level_id,
+            addr.to_string()
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+
+        inserted_report.id.to_string().into_response()
+    } else {
+        CommonResponse::InvalidRequest.into_response()
+    }
+}
+
+async fn update_description(
+    Extension(db): Extension<PgPool>,
+    Form(data): Form<UpdateDescriptionRequest>,
+) -> Response {
+    if data.secret != COMMON_SECRET {
+        return CommonResponse::InvalidRequest.into_response();
+    }
+
+    let account = match utilities::database::get_account_by_id(&db, data.account_id).await {
+        Some(account) => account,
+        None => {
+            return CommonResponse::InvalidRequest.into_response();
+        }
+    };
+
+    if data.hash != account.gjp2.unwrap_or_default() {
+        return CommonResponse::InvalidRequest.into_response();
+    }
+
+    sqlx::query!(
+        "UPDATE levels SET level_desc = $1 WHERE level_id = $2 AND ext_id = $3",
+        data.level_description,
+        data.level_id,
+        &data.account_id.to_string()
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+
+    CommonResponse::Success.into_response()
+}
+
+async fn get_level_scores(
+    Extension(db): Extension<PgPool>,
+    Form(data): Form<GetLevelScoresRequest>,
+) -> Response {
+    let attempts = (data.attempts.unwrap_or_default() - 8354).min(0);
+    let clicks = (data.clicks.unwrap_or_default() - 3991).min(0);
+    let time = (data.time.unwrap_or_default() - 4085).min(0);
+    let coins = (data.coins.unwrap_or_default() - 5819).min(0);
+    let daily_id = data.timely_id.unwrap_or_default();
+
+    let pb_differences = data.pb_differences.unwrap_or("0".to_owned());
+    let progresses = utilities::crypto::cyclic_xor(
+        &utilities::crypto::decode_base64_url(&pb_differences),
+        "41274",
     );
 
-    out.into_response()
+    let old_score: Result<LevelScore, sqlx::Error> = sqlx::query_as(&format!(
+        "SELECT * FROM level_scores WHERE account_id = $1 AND level_id = $2 AND daily_id {} 0",
+        if daily_id > 0 { ">" } else { "=" }
+    ))
+    .bind(data.account_id)
+    .bind(data.level_id)
+    .fetch_one(&db)
+    .await;
+
+    if old_score.is_err() {
+        sqlx::query!(
+            r#"
+            INSERT INTO level_scores (account_id, level_id, percent, upload_date, coins, attempts, clicks, time, progresses, daily_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            "#,
+            data.account_id, data.level_id, data.percent, chrono::Utc::now().timestamp() as i32, coins, attempts, clicks, time, progresses, daily_id
+        ).execute(&db).await.unwrap();
+    } else if old_score.unwrap().percent < data.percent {
+        sqlx::query!(
+            "UPDATE level_scores SET percent = $1, upload_date = $2, coins = $3, attempts = $4, clicks = $5, time = $6, progresses = $7, daily_id = $8 WHERE account_id = $9 AND level_id = $10",
+            data.percent, chrono::Utc::now().timestamp() as i32, coins, attempts, clicks, time, progresses, daily_id, data.account_id, data.level_id
+        ).execute(&db).await.unwrap();
+    }
+
+    if data.percent < 0 || data.percent > 100 {
+        utilities::database::ban_user(&db, data.account_id).await;
+        return CommonResponse::InvalidRequest.into_response();
+    }
+
+    #[allow(unused_assignments)]
+    let mut scores: Vec<LevelScore> = Vec::new();
+
+    match data.leaderboard_type {
+        0 => {
+            let friends = utilities::database::get_friends(&db, data.account_id).await;
+
+            scores = sqlx::query_as!(
+                LevelScore,
+                "SELECT * FROM level_scores WHERE level_id = $1 AND account_id = ANY($2) ORDER BY percent DESC",
+                data.level_id, &friends
+            ).fetch_all(&db).await.unwrap();
+        }
+        1 => {
+            scores = sqlx::query_as!(
+                LevelScore,
+                "SELECT * FROM level_scores WHERE level_id = $1 ORDER BY percent DESC",
+                data.level_id
+            )
+            .fetch_all(&db)
+            .await
+            .unwrap();
+        }
+        2 => {
+            scores = sqlx::query_as!(
+                LevelScore,
+                "SELECT * FROM level_scores WHERE level_id = $1 AND upload_date > $2 ORDER BY percent DESC",
+                data.level_id, (chrono::Utc::now().timestamp() - 604800) as i32
+            ).fetch_all(&db).await.unwrap();
+        }
+        _ => {
+            return CommonResponse::InvalidRequest.into_response();
+        }
+    }
+
+    let mut response = String::new();
+
+    for (index, score) in scores.iter().enumerate() {
+        let user = utilities::database::get_user_by_id(&db, score.account_id)
+            .await
+            .unwrap();
+        if user.is_banned == 1 {
+            continue;
+        }
+
+        response.push_str(&format!(
+            "1:{}:2:{}:3:{}:6:{}:9:{}:10:{}:11:{}:13:{}:14:{}:15:{}:16:{}:42:{}|",
+            user.username,
+            user.user_id,
+            score.percent,
+            index + 1,
+            user.icon,
+            user.color1,
+            user.color2,
+            user.user_coins,
+            user.icon_type,
+            user.special,
+            score.account_id,
+            utilities::make_time(score.time as i64)
+        ));
+    }
+
+    let _ = response.trim_end_matches("|");
+    response.into_response()
+}
+
+async fn upload_level_comment(
+    Extension(db): Extension<PgPool>,
+    Form(data): Form<UploadLevelCommentRequest>,
+) -> Response {
+    if data.secret != COMMON_SECRET {
+        return CommonResponse::InvalidRequest.into_response();
+    }
+
+    let account = match utilities::database::get_account_by_id(&db, data.account_id).await {
+        Some(account) => account,
+        None => {
+            return CommonResponse::InvalidRequest.into_response();
+        }
+    };
+
+    if data.hash != account.gjp2.unwrap_or_default() {
+        return CommonResponse::InvalidRequest.into_response();
+    }
+
+    if data.comment.len() > 140 {
+        return "temp_0_You cannot post comments above 140 characters!".into_response();
+    }
+    if data.percent < 0 || data.percent > 100 {
+        return "temp_0_Invalid percentage!".into_response();
+    }
+
+    let user = match utilities::database::get_user_by_id(&db, data.account_id).await {
+        Some(user) => user,
+        None => {
+            return CommonResponse::InvalidRequest.into_response();
+        }
+    };
+
+    sqlx::query!(
+        r#"
+        INSERT INTO comments (username, comment, level_id, user_id, timestamp, percent)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        "#,
+        data.username,
+        data.comment,
+        data.level_id,
+        user.user_id,
+        chrono::Utc::now().timestamp() as i32,
+        data.percent
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+
+    CommonResponse::Success.into_response()
+}
+
+async fn get_level_comments(
+    Extension(db): Extension<PgPool>,
+    Form(data): Form<GetLevelCommentsRequest>,
+) -> Response {
+    let level = match utilities::database::get_level_by_id(&db, data.level_id).await {
+        Some(level) => level,
+        None => {
+            return CommonResponse::InvalidRequest.into_response();
+        }
+    };
+
+    let mut comments_response = String::new();
+    let comments = sqlx::query!(
+        "SELECT * FROM comments WHERE level_id = $1 LIMIT $2",
+        data.level_id,
+        data.count.unwrap_or(10) as i64
+    )
+    .fetch_all(&db)
+    .await
+    .unwrap();
+
+    for comment in comments {
+        let role = utilities::database::get_user_role(&db, comment.user_id)
+            .await
+            .unwrap();
+        let user = utilities::database::get_user_by_id(&db, comment.user_id)
+            .await
+            .unwrap();
+
+        // Comment Structure
+        comments_response.push_str(&format!(
+            "1~{}~2~{}~3~{}~4~{}~5~{}~6~{}~7~{}~8~{}~9~{}~10~{}~11~{}~12~{}:",
+            level.level_id,
+            comment.comment,
+            comment.user_id,
+            comment.likes,
+            0, // The amount of dislikes the comment has (unused)
+            comment.comment_id,
+            comment.is_spam as u8,
+            comment.user_id,
+            utilities::make_time(comment.timestamp as i64),
+            comment.percent,
+            role.mod_badge_level,
+            role.comment_color
+        ));
+
+        // Author/User Structure
+        comments_response.push_str(&format!(
+            "1~{}~9~{}~10~{}~11~{}~14~{}~15~{}~16~{}|",
+            comment.username,
+            user.icon,
+            user.color1,
+            user.color2,
+            user.icon_type,
+            user.acc_glow,
+            user.ext_id
+        ));
+    }
+
+    let _ = comments_response.trim_end_matches("|");
+    format!(
+        "{}\n#{}:{}:{}",
+        comments_response,
+        data.page * data.count.unwrap_or(10),
+        data.page,
+        1
+    )
+    .into_response()
+
+    // CommonResponse::Success.into_response()
 }
 
 pub fn init() -> Router {
     Router::new()
         .route("/database/uploadGJLevel21.php", post(upload_level))
-        .route("/database/getGJLevels21.php", post(get_level))
+        .route("/database/getGJLevels21.php", post(get_levels))
         .route("/database/downloadGJLevel22.php", post(download_level))
+        .route("/database/deleteGJLevelUser20.php", post(delete_level))
+        .route("/database/suggestGJStars20.php", post(suggest_stars))
+        .route("/database/rateGJStars211.php", post(rate_stars))
+        .route("/database/rateGJDemon21.php", post(rate_demon))
+        .route("/database/reportGJLevel.php", post(report_level))
+        .route("/database/updateGJDesc20.php", post(update_description))
+        .route("/database/getGJLevelScores211.php", post(get_level_scores))
+        .route(
+            "/database/uploadGJComment21.php",
+            post(upload_level_comment),
+        )
+        .route("/database/getGJComments21.php", post(get_level_comments))
 }

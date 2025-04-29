@@ -17,6 +17,8 @@ use crate::{
     utilities::{self, crypto},
 };
 
+use super::COMMON_SECRET;
+
 // https://github.com/tokio-rs/axum/discussions/2380#discussioncomment-7705720
 // luv luv!
 pub fn take_first<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
@@ -32,46 +34,46 @@ where
 #[allow(unused)]
 struct UpdateRequest {
     #[serde(rename = "accountID")]
-    account_id: Option<i32>,
+    account_id: i32,
     #[serde(rename = "userName")]
-    username: Option<String>,
-    secret: Option<String>,
-    stars: Option<i32>,
-    demons: Option<i32>,
-    icon: Option<i32>,
-    color1: Option<i32>,
-    color2: Option<i32>,
-    coins: Option<i32>,
+    username: String,
+    secret: String,
+    stars: i32,
+    demons: i32,
+    icon: i32,
+    color1: i32,
+    color2: i32,
+    coins: i32,
     #[serde(rename = "iconType")]
-    icon_type: Option<i32>,
+    icon_type: i32,
     #[serde(rename = "userCoins")]
-    user_coins: Option<i32>,
-    special: Option<i32>,
+    user_coins: i32,
+    special: i32,
     #[serde(rename = "accIcon")]
-    accessory_icon: Option<i32>,
+    accessory_icon: i32,
     #[serde(rename = "accShip")]
-    accessory_ship: Option<i32>,
+    accessory_ship: i32,
     #[serde(rename = "accBall")]
-    accessory_ball: Option<i32>,
+    accessory_ball: i32,
     #[serde(rename = "accBird")]
-    accessory_bird: Option<i32>,
+    accessory_bird: i32,
     #[serde(rename = "accDart")]
-    accessory_dart: Option<i32>,
+    accessory_dart: i32,
     #[serde(rename = "accRobot")]
-    accessory_robot: Option<i32>,
+    accessory_robot: i32,
     #[serde(rename = "accGlow")]
-    accessory_glow: Option<i32>,
+    accessory_glow: i32,
     #[serde(rename = "accSpider")]
-    accessory_spider: Option<i32>,
+    accessory_spider: i32,
     #[serde(rename = "accExplosion")]
-    accessory_explosion: Option<i32>,
+    accessory_explosion: i32,
     #[serde(rename = "accSwing")]
-    accessory_swing: Option<i32>,
+    accessory_swing: i32,
     #[serde(rename = "accJetpack")]
-    accessory_jetpack: Option<i32>,
-    diamonds: Option<i32>,
-    moons: Option<i32>,
-    color3: Option<i32>,
+    accessory_jetpack: i32,
+    diamonds: i32,
+    moons: i32,
+    color3: i32,
     dinfo: Option<String>,
     dinfow: Option<i32>,
     dinfog: Option<i32>,
@@ -81,11 +83,11 @@ struct UpdateRequest {
     #[serde(default, rename = "gameVersion", deserialize_with = "take_first")]
     game_version: Option<i32>,
     #[serde(rename = "binaryVersion")]
-    binary_version: Option<i32>,
+    binary_version: i32,
     #[serde(rename = "udid")]
-    id: Option<String>,
+    id: String,
     #[serde(rename = "gjp2")]
-    hash: Option<String>,
+    hash: String,
 }
 
 #[derive(Deserialize, Debug)]
@@ -155,23 +157,23 @@ struct PostCommentRequest {
 #[allow(unused)]
 struct DeleteCommentRequest {
     #[serde(rename = "gameVersion")]
-    game_version: Option<i32>,
+    game_version: i32,
     #[serde(rename = "binaryVersion")]
-    binary_version: Option<i32>,
+    binary_version: i32,
     #[serde(rename = "udid")]
-    id: Option<String>,
-    uuid: Option<i32>,
+    id: String,
+    uuid: i32,
     #[serde(default, rename = "accountID", deserialize_with = "take_first")]
     account_id: Option<i32>,
     #[serde(rename = "gjp2")]
-    hash: Option<String>,
+    hash: String,
     #[serde(rename = "commentID")]
-    comment_id: Option<i32>,
-    secret: Option<String>,
+    comment_id: i32,
+    secret: String,
     #[serde(rename = "cType")]
-    comment_type: Option<i32>,
+    comment_type: i32,
     #[serde(rename = "targetAccountID")]
-    target_account_id: Option<i32>,
+    target_account_id: i32,
 }
 
 #[derive(Deserialize, Debug)]
@@ -180,24 +182,37 @@ struct UpdateUserSettingsRequest {
     #[serde(default, rename = "accountID", deserialize_with = "take_first")]
     account_id: Option<i32>,
     #[serde(rename = "gjp2")]
-    hash: Option<String>,
+    hash: String,
     #[serde(rename = "mS")]
     // Allow Messages From:
     // ALL, FRIENDS, NONE
-    allow_messages: Option<i32>,
+    allow_messages: i32,
     #[serde(rename = "frS")]
     // Allow Friend Requests From:
     // ALL, NONE
-    allow_friend_requests: Option<i32>,
+    allow_friend_requests: i32,
     #[serde(rename = "cS")]
     // Show Comment History To:
     // ALL, FRIENDS, ME
-    show_comments_history: Option<i32>,
+    show_comments_history: i32,
     #[serde(rename = "yt")]
-    youtube: Option<String>,
-    twitter: Option<String>,
-    twitch: Option<String>,
-    secret: Option<String>,
+    youtube: String,
+    twitter: String,
+    twitch: String,
+    secret: String,
+}
+
+#[derive(Deserialize, Debug)]
+#[allow(unused)]
+struct GetUsersRequest {
+    #[serde(rename = "gameVersion")]
+    game_version: i32,
+    #[serde(rename = "binaryVersion")]
+    binary_version: i32,
+    #[serde(rename = "str")]
+    query: String,
+    secret: String,
+    page: Option<i32>,
 }
 
 async fn get_friend_requests_count(db: &PgPool, account_id: i32) -> Option<i64> {
@@ -368,7 +383,7 @@ async fn update_user_scores(
         .execute(&db)
         .await;
 
-        return data.account_id.unwrap().to_string().into_response();
+        return data.account_id.to_string().into_response();
     }
 
     "-1".into_response()
@@ -646,9 +661,6 @@ async fn delete_user_comment(
     let Some(account_id) = data.account_id else {
         return CommonResponse::InvalidRequest.into_response();
     };
-    let Some(comment_id) = data.comment_id else {
-        return CommonResponse::InvalidRequest.into_response();
-    };
 
     let user = match utilities::database::get_user_by_id(&db, account_id).await {
         Some(user) => user,
@@ -659,7 +671,7 @@ async fn delete_user_comment(
 
     let comment = sqlx::query!(
         r#"SELECT * FROM acc_comments WHERE comment_id = $1"#,
-        comment_id
+        data.comment_id
     )
     .fetch_one(&db)
     .await;
@@ -670,7 +682,7 @@ async fn delete_user_comment(
 
     sqlx::query!(
         "DELETE FROM acc_comments WHERE comment_id = $1 AND user_id = $2",
-        comment_id,
+        data.comment_id,
         user.user_id
     )
     .execute(&db)
@@ -685,16 +697,16 @@ async fn update_user_settings(
     Form(data): Form<UpdateUserSettingsRequest>,
 ) -> Response {
     let account_id = data.account_id.unwrap();
-    let youtube = data.youtube.unwrap_or_default();
-    let twitter = data.twitter.unwrap_or_default();
-    let twitch = data.twitch.unwrap_or_default();
-    let allow_messages = data.allow_messages.unwrap_or_default();
-    let allow_friend_requests = data.allow_friend_requests.unwrap_or_default();
-    let show_comments_history = data.show_comments_history.unwrap_or_default();
+    let youtube = data.youtube;
+    let twitter = data.twitter;
+    let twitch = data.twitch;
+    let allow_messages = data.allow_messages;
+    let allow_friend_requests = data.allow_friend_requests;
+    let show_comments_history = data.show_comments_history;
 
     sqlx::query!(
         r#"
-        UPDATE accounts 
+        UPDATE accounts
         SET youtube_url = $1, twitter = $2, twitch = $3,
             ms = $4, fr_s = $5, cs = $6
         WHERE account_id = $7
@@ -712,6 +724,54 @@ async fn update_user_settings(
     .unwrap();
 
     CommonResponse::Success.into_response()
+}
+
+async fn get_users(
+    Extension(db): Extension<PgPool>,
+    Form(data): Form<GetUsersRequest>,
+) -> Response {
+    if data.secret != COMMON_SECRET {
+        return CommonResponse::InvalidRequest.into_response();
+    }
+
+    let users = utilities::database::search_user_by_username(&db, &data.query, 10).await;
+    let mut response = String::new();
+
+    if users.is_empty() {
+        return CommonResponse::InvalidRequest.into_response();
+    }
+
+    for user in &users {
+        response.push_str(&format!(
+            "1:{}:2:{}:13:{}:17:{}:9:{}:10:{}:11:{}:51:{}:14:{}:15:{}:16:{}:3:{}:8:{}:4:{}:46:{}:52:{}|",
+            user.username,
+            user.user_id,
+            user.coins,
+            user.user_coins,
+            user.icon,
+            user.color1,
+            user.color2,
+            user.color3,
+            user.icon_type,
+            user.special,
+            user.ext_id,
+            user.stars,
+            user.creator_points.floor() as i32,
+            user.demons,
+            user.diamonds,
+            user.moons,
+        ));
+    }
+
+    let response = response.trim_end_matches("|").to_string();
+
+    format!(
+        "{}\n#{}:{}:10",
+        response,
+        users.len(),
+        data.page.unwrap_or_default() * 10
+    )
+    .into_response()
 }
 
 pub fn init() -> Router {
@@ -734,4 +794,5 @@ pub fn init() -> Router {
             "/database/updateGJUserScore22.php",
             post(update_user_scores),
         )
+        .route("/database/getGJUsers20.php", post(get_users))
 }

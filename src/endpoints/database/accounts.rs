@@ -1,8 +1,7 @@
-use std::{io::Read, net::SocketAddr};
+use std::io::Read;
 
 use axum::{
     Extension, Form, Router,
-    extract::ConnectInfo,
     response::{IntoResponse, Response},
     routing::post,
 };
@@ -16,6 +15,8 @@ use crate::{
     types::response::{BackupResponse, CommonResponse, LoginResponse, RegisterResponse},
     utilities,
 };
+
+use super::ACCOUNT_SECRET;
 
 #[derive(Deserialize)]
 #[allow(unused)]
@@ -101,6 +102,10 @@ async fn register_account(
     Extension(db): Extension<PgPool>,
     Form(data): Form<RegisterRequest>,
 ) -> Response {
+    if data.secret != ACCOUNT_SECRET {
+        return CommonResponse::InvalidRequest.into_response();
+    }
+
     if data.username.len() < 3 {
         return RegisterResponse::UsernameIsTooShort.into_response();
     }
@@ -120,10 +125,10 @@ async fn register_account(
     let password = utilities::crypto::hash_password(&data.password).await;
     let gjp2 = utilities::crypto::sha1_salt(&data.password, "mI29fmAnxgTs");
 
-    let result = sqlx::query!(
+    let account_result = sqlx::query!(
         r#"
         INSERT INTO accounts (username, password, email, is_active, gjp2)
-        VALUES ($1, $2, $3, $4, $5)
+        VALUES ($1, $2, $3, $4, $5) RETURNING account_id
     "#,
         data.username,
         password,
@@ -131,66 +136,61 @@ async fn register_account(
         true,
         gjp2
     )
-    .execute(&db)
-    .await;
+    .fetch_one(&db)
+    .await
+    .unwrap();
 
-    match result {
-        Ok(_) => RegisterResponse::Success.into_response(),
-        Err(_) => RegisterResponse::InvalidRequest.into_response(),
-    }
+    sqlx::query!(
+        r#"
+        INSERT INTO users (is_registered, ext_id, username, last_played)
+        VALUES ($1, $2, $3, $4)
+    "#,
+        1,
+        account_result.account_id.to_string(),
+        data.username,
+        chrono::Utc::now().timestamp() as i32,
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+
+    RegisterResponse::Success.into_response()
 }
 
 async fn login_account(
     Extension(db): Extension<PgPool>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Form(data): Form<LoginRequest>,
 ) -> Response {
-    let account = match sqlx::query!(
-        "SELECT account_id, password, gjp2, is_active FROM accounts WHERE username = $1",
-        data.username
-    )
-    .fetch_optional(&db)
-    .await
-    {
-        Ok(Some(acc)) => acc,
-        _ => return LoginResponse::InvalidRequest.into_response(),
+    if data.secret != ACCOUNT_SECRET {
+        return CommonResponse::InvalidRequest.into_response();
+    }
+
+    let account = match utilities::database::get_account_by_username(&db, &data.username).await {
+        Some(account) => account,
+        None => {
+            return LoginResponse::InvalidRequest.into_response();
+        }
     };
 
     if data.hash != account.gjp2.unwrap_or_default() {
         return LoginResponse::WrongCredentials.into_response();
     }
-
-    let user_id = match utilities::database::get_user_id(
-        &db,
-        &account.account_id.to_string(),
-        &data.username,
-        &addr.ip(),
-    )
-    .await
-    {
-        Ok(user_id) => user_id,
-        _ => return LoginResponse::InvalidRequest.into_response(),
-    };
-
-    if data.id.parse::<i64>().is_err() {
-        if let Some(old_user_id) =
-            sqlx::query_scalar!("SELECT user_id FROM users WHERE ext_id = $1", data.id)
-                .fetch_optional(&db)
-                .await
-                .unwrap_or(None)
-        {
-            let _ = sqlx::query!(
-                "UPDATE levels SET user_id = $1, ext_id = $2 WHERE user_id = $3",
-                user_id,
-                account.account_id.to_string(),
-                old_user_id
-            )
-            .execute(&db)
-            .await;
-        }
+    if !account.is_active {
+        return LoginResponse::AccountIsNotActivated.into_response();
     }
 
-    format!("{},{}", account.account_id, user_id).into_response()
+    let user = match utilities::database::get_user_by_id(&db, account.account_id).await {
+        Some(user) => user,
+        None => {
+            return LoginResponse::InvalidRequest.into_response();
+        }
+    };
+
+    if user.is_banned == 1 {
+        return LoginResponse::AccountIsBanned.into_response();
+    }
+
+    format!("{},{}", account.account_id, user.user_id).into_response()
 }
 
 async fn get_account_url() -> Response {
@@ -201,7 +201,7 @@ async fn backup_account(
     Extension(db): Extension<PgPool>,
     Form(data): Form<BackupRequest>,
 ) -> Response {
-    if data.secret != "Wmfv3899gc9" {
+    if data.secret != ACCOUNT_SECRET {
         return CommonResponse::InvalidRequest.into_response();
     }
 
@@ -265,7 +265,7 @@ async fn backup_account(
 }
 
 async fn sync_account(Extension(db): Extension<PgPool>, Form(data): Form<SyncRequest>) -> Response {
-    if data.secret != "Wmfv3899gc9" {
+    if data.secret != ACCOUNT_SECRET {
         return CommonResponse::InvalidRequest.into_response();
     }
 

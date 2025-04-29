@@ -4,10 +4,9 @@ use rand::prelude::*;
 use serde::Deserialize;
 use sqlx::PgPool;
 
-use crate::{
-    types::response::CommonResponse,
-    utilities::crypto::{self, decode_base64_url, xor_cipher},
-};
+use crate::{types::response::CommonResponse, utilities};
+
+use super::COMMON_SECRET;
 
 #[derive(Deserialize, Debug)]
 #[allow(unused)]
@@ -27,7 +26,8 @@ struct RewardsRequest {
     #[serde(rename = "rewardType")]
     reward_type: Option<i32>, // TODO: enum
     secret: String,
-    chk: Option<String>, // checksum? used for security purposes or whatever
+    #[serde(rename = "chk")]
+    checksum: Option<String>, // checksum? used for security purposes or whatever
     r1: Option<i32>,
     r2: Option<i32>, // beep boop, star wars mf
 }
@@ -36,54 +36,41 @@ async fn get_rewards(
     Extension(db): Extension<PgPool>,
     Form(data): Form<RewardsRequest>,
 ) -> impl IntoResponse {
-    if data.secret != "Wmfd2893gb7" {
+    if data.secret != COMMON_SECRET {
         return CommonResponse::InvalidRequest.into_response();
     }
 
-    let checksum = data.chk.unwrap();
-    let account_id = data.account_id;
-    let reward_type = data.reward_type.unwrap();
+    let checksum = data.checksum.unwrap_or_default();
+    let reward_type = data.reward_type.unwrap_or_default();
     let hash = data.hash;
 
-    let account = sqlx::query!("SELECT * FROM accounts WHERE account_id = $1", account_id)
-        .fetch_one(&db)
-        .await;
+    let account = match utilities::database::get_account_by_id(&db, data.account_id).await {
+        Some(account) => account,
+        None => {
+            return CommonResponse::InvalidRequest.into_response();
+        }
+    };
 
-    if account.is_err() {
-        return "-1".into_response();
-    }
-
-    let account = account.unwrap();
     if account.gjp2.unwrap_or_default() != hash {
         return "-1".into_response();
     }
 
-    let user = sqlx::query!(
-        "SELECT * FROM users WHERE ext_id = $1",
-        &data.account_id.to_string()
-    )
-    .fetch_one(&db)
-    .await
-    .unwrap();
-
-    let chests_data = sqlx::query!(
-        "SELECT chest1_time, chest2_time, chest1_count, chest2_count FROM users WHERE ext_id = $1",
-        account_id.to_string()
-    )
-    .fetch_one(&db)
-    .await
-    .map_err(|_| "-1".into_response())
-    .unwrap();
+    let user = match utilities::database::get_user_by_id(&db, data.account_id).await {
+        Some(user) => user,
+        None => {
+            return CommonResponse::InvalidRequest.into_response();
+        }
+    };
 
     let mut rng = StdRng::from_os_rng();
     let current_time = chrono::Utc::now().timestamp();
     let current_time = current_time + 100;
 
-    let mut chest1_count = chests_data.chest1_count;
-    let mut chest2_count = chests_data.chest2_count;
+    let mut chest1_count = user.chest1_count;
+    let mut chest2_count = user.chest2_count;
 
-    let chest1_difference = current_time - chests_data.chest1_time as i64;
-    let chest2_difference = current_time - chests_data.chest2_time as i64;
+    let chest1_difference = current_time - user.chest1_time as i64;
+    let chest2_difference = current_time - user.chest2_time as i64;
 
     let chest1_items = [1, 2, 3, 4, 5, 6, 10, 11, 12, 13, 14];
     let chest2_items = [1, 2, 3, 4, 5, 6, 10, 11, 12, 13, 14];
@@ -122,7 +109,7 @@ async fn get_rewards(
             UPDATE users SET chest1_count = chest1_count + 1, chest1_time = $1 WHERE user_id = $2
         "#,
             current_time as i32,
-            account_id
+            user.user_id
         )
         .execute(&db)
         .await
@@ -146,14 +133,17 @@ async fn get_rewards(
         .unwrap();
     }
 
-    let reward_checksum = xor_cipher(decode_base64_url(&checksum[..5]).as_bytes(), b"59182");
+    let decoded_checksum = utilities::crypto::decode_base64_url_raw(&checksum[5..]);
+    let decoded_checksum =
+        utilities::crypto::cyclic_xor(&String::from_utf8_lossy(&decoded_checksum), "59182");
 
-    let reward = format!(
-        "1:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
-        user.user_id,
-        reward_checksum,
+    let response = format!(
+        "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
+        utilities::rand_ascii(5),
+        data.user_id,
+        decoded_checksum,
         data.id,
-        account_id,
+        data.account_id,
         chest1_left,
         chest1_stuff,
         chest1_count,
@@ -163,9 +153,9 @@ async fn get_rewards(
         reward_type
     );
 
-    let xor_reward = crypto::xor_cipher(reward.as_bytes(), b"59182");
-    let b64_reward = crypto::encode_base64_url(&xor_reward);
-    let hash_reward = crypto::sha1_salt(&b64_reward, "pC26fpYaQCtg");
+    let xor_reward = utilities::crypto::cyclic_xor(&response, "59182");
+    let b64_reward = utilities::crypto::encode_base64_url(&xor_reward);
+    let hash_reward = utilities::crypto::sha1_salt(&response, "pC26fpYaQCtg");
 
     format!("{}|{}", b64_reward, hash_reward).into_response()
 }

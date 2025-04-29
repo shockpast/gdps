@@ -7,23 +7,17 @@ Names of Folders are from `incl` folder in Cvolton's and MegaSa1nt's repositorie
 - [x] getGJLevel
 - [x] downloadGJLevel
 - [x] uploadGJLevel
-- [ ] rateGJDemon
-- [ ] rateGJLevel
-- [ ] rateGJStars
-- [ ] reportGJLevel
-- [ ] suggestGJStars
-- [ ] updateGJDesc
-- [ ] deleteGJLevelUser
-- [ ] getGJDailyLevel
-
-## comments
-
-- [x] deleteGJAccComment
-- [ ] deleteGJComment (levels)
-- [x] getGJAccountComments
-- [ ] getGJComments (levels)
-- [x] uploadGJAccComment
-- [ ] uploadGJComment (levels)
+- [x] rateGJDemon
+- [ ] ~~rateGJLevel~~ (not used in 2.2 apparently, excluded)
+- [x] rateGJStars
+- [x] reportGJLevel
+- [x] suggestGJStars
+- [x] updateGJDesc
+- [x] deleteGJLevelUser
+- [ ] getGJDailyLevel (not really want to do write this, most likely will be last to be implemented)
+- [x] uploadGJComment
+- [x] getGJComments (not fully done, filters are not there)
+- [ ] deleteGJComment
 
 ## levelpacks
 
@@ -42,7 +36,7 @@ Names of Folders are from `incl` folder in Cvolton's and MegaSa1nt's repositorie
 
 ## misc
 
-- [ ] getAccountURL
+- [x] getAccountURL
 - [ ] getGJSongInfo
 - [ ] getTopArtists
 - [ ] likeGJItem
@@ -51,11 +45,10 @@ Names of Folders are from `incl` folder in Cvolton's and MegaSa1nt's repositorie
 
 - [x] requestUserAccess
 
-## profiles
+## users
 
 - [x] getGJUserInfo
-- [ ] getGJUsers
-- [x] updateGJAccSettings
+- [x] getGJUsers
 
 ## relationships
 
@@ -72,12 +65,12 @@ Names of Folders are from `incl` folder in Cvolton's and MegaSa1nt's repositorie
 ## rewards
 
 - [ ] getGJChallenges
-- [ ] getGJRewards *(I don't understand how to implement it correctly)*
+- [ ] getGJRewards (i don't understand how to format the response correctly)
 
 ## scores
 
 - [ ] getGJCreators
-- [ ] getGJLevelScores
+- [x] getGJLevelScores
 - [ ] getGJLevelScoresPlat
 - [x] getGJScores
 - [x] updateGJUserScore
@@ -88,3 +81,7 @@ Names of Folders are from `incl` folder in Cvolton's and MegaSa1nt's repositorie
 - [x] loginGJAccount
 - [x] registerGJAccount
 - [x] syncGJAccount
+- [x] updateGJAccSettings
+- [x] deleteGJAccComment
+- [x] getGJAccountComments
+- [x] uploadGJAccComment

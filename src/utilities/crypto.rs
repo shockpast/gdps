@@ -7,15 +7,22 @@ use base64::{
 };
 use sha1::Digest as sha1Digest;
 
-pub fn xor_cipher(string: &[u8], key: &[u8]) -> String {
-    let mut result: String = String::new();
+// pub fn singular_xor(input: &str, key: u8) -> String {
+//     input.bytes().map(|b| (b ^ key) as char).collect()
+// }
 
-    for i in 0..string.len() {
-        let c = string[i] ^ key[i % key.len()];
-        result.push(c as char);
-    }
+pub fn cyclic_xor(input: &str, key: &str) -> String {
+    let key_bytes = key.as_bytes();
+    let key_len = key_bytes.len();
 
-    result
+    input
+        .bytes()
+        .enumerate()
+        .map(|(i, b)| {
+            let k = key_bytes[i % key_len];
+            (b ^ k) as char
+        })
+        .collect()
 }
 
 pub fn sha1_salt(base: &String, salt: &str) -> String {
@@ -26,7 +33,7 @@ pub fn sha1_salt(base: &String, salt: &str) -> String {
     hex::encode(hasher.finalize().as_slice())
 }
 
-pub fn hash_level_string(level_string: String) -> String {
+pub fn hash_level_string(level_string: &String) -> String {
     let mut lstring: String = String::new();
 
     for (counter, i) in (0_i16..).zip((0..level_string.len()).step_by(level_string.len() / 40)) {
@@ -56,9 +63,9 @@ pub async fn hash_password(password: &str) -> String {
     .unwrap()
 }
 
-pub fn encode_base64(input: &str) -> String {
-    STANDARD.encode(input)
-}
+// pub fn encode_base64(input: &str) -> String {
+//     STANDARD.encode(input)
+// }
 
 pub fn encode_base64_url(input: &str) -> String {
     URL_SAFE.encode(input)

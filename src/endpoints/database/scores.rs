@@ -42,8 +42,9 @@ async fn get_scores(
                       AND is_banned = 0
                       AND ip NOT IN (SELECT ip FROM banned_ips)
                 ORDER BY stars + moons DESC
-                LIMIT 100
-            "#
+                LIMIT $1
+            "#,
+                data.count.min(0).max(100) as i64
             )
             .fetch_all(&db)
             .await
@@ -60,8 +61,9 @@ async fn get_scores(
                       AND is_creator_banned = 0
                       AND ip NOT IN (SELECT ip FROM banned_ips)
                 ORDER BY creator_points DESC
-                LIMIT 100
-            "#
+                LIMIT $1
+            "#,
+                data.count.min(0).max(100) as i64
             )
             .fetch_all(&db)
             .await
@@ -83,8 +85,8 @@ async fn get_scores(
                     WHERE (stars BETWEEN (SELECT stars FROM current_user) - 1000 AND (SELECT stars FROM current_user) + 1000)
                       AND (moons BETWEEN (SELECT moons FROM current_user) - 500 AND (SELECT moons FROM current_user) + 500)
                 ORDER BY (ABS(stars - (SELECT stars FROM current_user)) + ABS(moons - (SELECT moons FROM current_user)))
-                LIMIT 50
-            "#, data.account_id.to_string())
+                LIMIT $2
+            "#, data.account_id.to_string(), data.count.min(0).max(50) as i64)
                 .fetch_all(&db)
                 .await
                 .unwrap();
@@ -93,8 +95,9 @@ async fn get_scores(
         }
         "friends" => {
             let user_friends = sqlx::query!(
-                "SELECT * FROM friendships WHERE person1 = $1 OR person2 = $1 LIMIT 50",
-                data.account_id
+                "SELECT * FROM friendships WHERE person1 = $1 OR person2 = $1 LIMIT $2",
+                data.account_id,
+                data.count.min(0).max(50) as i64
             )
             .fetch_all(&db)
             .await

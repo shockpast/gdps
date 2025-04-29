@@ -1,7 +1,9 @@
 pub mod crypto;
 pub mod database;
+pub mod gd;
 
 use chrono::{DateTime, Utc};
+use rand::Rng;
 
 pub fn make_time(timestamp: i64) -> String {
     let date = DateTime::<Utc>::from_timestamp(timestamp, 0)
@@ -35,4 +37,12 @@ pub fn make_time(timestamp: i64) -> String {
     }
 
     format!("{} second{}", seconds, if seconds == 1 { "" } else { "s" })
+}
+
+pub fn rand_ascii(length: usize) -> String {
+    rand::rng()
+        .sample_iter(&rand::distr::Alphanumeric)
+        .take(length)
+        .map(char::from)
+        .collect()
 }
