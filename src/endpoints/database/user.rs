@@ -964,11 +964,9 @@ async fn get_messages(
     let get_sent = data.get_sent.unwrap_or_default();
     let offset = data.page * 10;
 
-    let mut messages: Vec<Message> = Vec::new();
-
-    match get_sent {
+    let messages = match get_sent {
         0 => {
-            messages = sqlx::query_as!(
+            sqlx::query_as!(
                 Message,
                 "SELECT * FROM messages WHERE to_account_id = $1 LIMIT 10 OFFSET $2",
                 data.account_id,
@@ -976,10 +974,10 @@ async fn get_messages(
             )
             .fetch_all(&db)
             .await
-            .unwrap();
+            .unwrap()
         }
         1 => {
-            messages = sqlx::query_as!(
+            sqlx::query_as!(
                 Message,
                 "SELECT * FROM messages WHERE acc_id = $1 LIMIT 10 OFFSET $2",
                 data.account_id,
@@ -987,7 +985,7 @@ async fn get_messages(
             )
             .fetch_all(&db)
             .await
-            .unwrap();
+            .unwrap()
         }
         _ => {
             return CommonResponse::InvalidRequest.into_response();
@@ -1107,8 +1105,6 @@ async fn delete_message(
         return CommonResponse::InvalidRequest.into_response();
     }
 
-    let is_sender = data.is_sender.unwrap_or_default();
-
     let messages = data.messages.unwrap_or_default();
     let message_id = data.message_id.unwrap_or_default();
 
@@ -1182,11 +1178,9 @@ async fn get_friends(
         return CommonResponse::InvalidRequest.into_response();
     }
 
-    let mut friend_requests: Vec<FriendRequest> = Vec::new();
-
-    match data.get_sent.unwrap_or_default() {
+    let friend_requests = match data.get_sent.unwrap_or_default() {
         0 => {
-            friend_requests = sqlx::query_as!(
+            sqlx::query_as!(
                 FriendRequest,
                 "SELECT * FROM friend_requests WHERE to_account_id = $1 LIMIT 10 OFFSET $2",
                 data.account_id,
@@ -1194,10 +1188,10 @@ async fn get_friends(
             )
             .fetch_all(&db)
             .await
-            .unwrap();
+            .unwrap()
         }
         1 => {
-            friend_requests = sqlx::query_as!(
+            sqlx::query_as!(
                 FriendRequest,
                 "SELECT * FROM friend_requests WHERE account_id = $1 LIMIT 10 OFFSET $2",
                 data.account_id,
@@ -1205,7 +1199,7 @@ async fn get_friends(
             )
             .fetch_all(&db)
             .await
-            .unwrap();
+            .unwrap()
         }
         _ => {
             return CommonResponse::InvalidRequest.into_response();
