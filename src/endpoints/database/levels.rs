@@ -469,6 +469,28 @@ struct GetLevelCommentsRequest {
     pub count: Option<i32>,
 }
 
+// gameVersion=22&binaryVersion=45&udid=S1521113833710632367108722349513471001&uuid=1&accountID=1&gjp2=261643dae062fbe097f4e80c2145122f7f1f3851&commentID=1&secret=Wmfd2893gb7&levelID=18
+#[derive(Deserialize, Debug)]
+#[allow(unused)]
+struct DeleteLevelCommentRequest {
+    #[serde(rename = "gameVersion")]
+    pub game_version: i32,
+    #[serde(rename = "binaryVersion")]
+    pub binary_version: i32,
+    #[serde(rename = "udid")]
+    pub id: String,
+    pub uuid: i32,
+    #[serde(rename = "accountID")]
+    pub account_id: i32,
+    #[serde(rename = "gjp2")]
+    pub hash: String,
+    #[serde(rename = "commentID")]
+    pub comment_id: i32,
+    pub secret: String,
+    #[serde(rename = "levelID")]
+    pub level_id: i32
+}
+
 #[derive(sqlx::FromRow, Deserialize, Debug, Default)]
 #[allow(unused)]
 struct Song {
@@ -628,7 +650,6 @@ async fn get_levels(
     let mut order = String::from("upload_date");
     let mut order_sorting = "DESC";
     let mut query_to_join = "";
-    let mut is_id_search = false;
     let mut no_limit = false;
     let mut filters: Vec<String> = vec!["(unlisted = 0 AND unlisted2 = 0)".into()];
 
@@ -743,7 +764,6 @@ async fn get_levels(
                         level_id,
                         data.account_id.unwrap_or_default()
                     )];
-                    is_id_search = true;
                 } else {
                     let first_char = query.chars().next().unwrap_or('d');
                     match first_char {
@@ -765,8 +785,8 @@ async fn get_levels(
                         }
                         _ => {
                             filters.push(format!(
-                                "level_name ILIKE '%{}%' OR level_id LIKE '%{}%'",
-                                query, query
+                                "level_name ILIKE '%{}%'",
+                                query
                             ));
                         }
                     }
@@ -912,10 +932,6 @@ async fn get_levels(
     let mut song_string = String::new();
 
     for level in levels {
-        if is_id_search {
-            break;
-        }
-
         level_stats.push(LevelStats {
             level_id: level.level_id,
             coins: level.star_coins,
@@ -1642,8 +1658,55 @@ async fn get_level_comments(
         1
     )
     .into_response()
+}
 
-    // CommonResponse::Success.into_response()
+async fn delete_level_comment(
+    Extension(db): Extension<PgPool>,
+    Form(data): Form<DeleteLevelCommentRequest>
+) -> Response {
+    let account = match utilities::database::get_account_by_id(&db, data.account_id).await {
+        Some(account) => account,
+        None => {
+            return CommonResponse::InvalidRequest.into_response();
+        }
+    };
+
+    if data.hash != account.gjp2.unwrap_or_default() {
+        return CommonResponse::InvalidRequest.into_response();
+    }
+
+    let user = match utilities::database::get_user_by_id(&db, data.account_id).await {
+        Some(user) => user,
+        None => {
+            return CommonResponse::InvalidRequest.into_response();
+        }
+    };
+
+    let level = match utilities::database::get_level_by_id(&db, data.level_id).await {
+        Some(level) => level,
+        None => {
+            return CommonResponse::InvalidRequest.into_response();
+        }
+    };
+
+    let result = sqlx::query!("DELETE FROM comments WHERE user_id = $1 AND comment_id = $2", user.user_id, data.comment_id)
+        .execute(&db).await.unwrap();
+
+    if result.rows_affected() == 0 {
+        let role = match utilities::database::get_user_role(&db, data.account_id).await {
+            Some(role) => role,
+            None => {
+                return CommonResponse::InvalidRequest.into_response();
+            }
+        };
+
+        if level.user_id == user.user_id || role.action_delete_comment == 1 {
+            sqlx::query!("DELETE FROM comments WHERE comment_id = $1 AND level_id = $2", data.comment_id, data.level_id)
+                .execute(&db).await.unwrap();
+        }
+    }
+
+    CommonResponse::Success.into_response()
 }
 
 pub fn init() -> Router {
@@ -1663,4 +1726,5 @@ pub fn init() -> Router {
             post(upload_level_comment),
         )
         .route("/database/getGJComments21.php", post(get_level_comments))
+        .route("/database/deleteGJComment20.php", post(delete_level_comment))
 }
